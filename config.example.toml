@@ -1,0 +1,29 @@
+# Copy to config.toml and customize. All example amounts are invented toy values.
+# default_budget = "Your Budget Name" # optional noninteractive default
+
+[defaults]
+# Categorizer and budget options are optional and may be overridden per budget.
+model = "haiku"
+guess_model = "opus"
+timeout = 60
+guess_timeout = 180
+wants_mode = "refill" # refill or accumulate
+priority_groups = ["Bills", "Needs", "Savings", "Wants"]
+discretionary_group = "Wants"
+
+[savings_pairs]
+# Leave this table empty to disable comparisons. Example:
+# "Retirement" = ["retirement", "pension"]
+# "Travel" = ["travel", "vacation"]
+
+# Match either a YNAB budget ID or its exact name.
+[budgets."Your Budget Name"]
+# priority_groups = ["Bills", "Needs", "Savings", "Wants"]
+# discretionary_group = "Wants"
+# monthly_income = 120000 # milliunits (120 currency units; toy example)
+# warn_ratio = 0.8
+# near_limit_ratio = 0.9
+# income_schedule = [{date = "2030-01-15", amount = 60000}]
+# wants_overrides = { "Dining" = 9000 }
+# merchant_rules = { "Known Merchant" = "Needs: Groceries" }
+# group_roles = { Savings = "saving", "Debt payments" = "repayment", Wants = "spending" }

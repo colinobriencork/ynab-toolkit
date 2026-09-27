@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pdm-python
+pdm_build/
+dist/
+*.egg-info/
+.env
+.pytest_cache/
+
+# Local budget configuration and generated financial records
+config.toml
+output/
+reports/
+*.run.json
+.claude/settings.local.json

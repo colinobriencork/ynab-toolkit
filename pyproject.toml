@@ -1,0 +1,44 @@
+[project]
+name = "ynab-toolkit"
+version = "0.1.1"
+description = "Configurable YNAB categorization, budget planning, and verification"
+authors = [
+    {name = "Colin O'Brien"},
+]
+dependencies = [
+    "httpx>=0.27",
+    "playwright>=1.60.0",
+    "beautifulsoup4>=4.14.3",
+    "pyotp>=2.9.0",
+]
+requires-python = ">=3.13"
+readme = "README.md"
+license = {text = "MIT"}
+
+[tool.pdm]
+distribution = false
+
+[tool.pdm.dev-dependencies]
+test = [
+    "pytest>=8.0",
+    "pytest-httpx>=0.34",
+    "respx>=0.22",
+]
+
+[tool.pdm.scripts]
+categorize = "python -m ynab_categorizer"
+assign = "python -m ynab_categorizer assign"
+phantom-assign = "python -m ynab_categorizer phantom-assign"
+spend-watch = "python -m ynab_categorizer spend-watch"
+setup = "python -m ynab_categorizer setup"
+amazon-login = "python -m ynab_categorizer amazon-login"
+budget-check = "python -m ynab_categorizer budget-check"
+correct = "python -m ynab_categorizer correct"
+restore = "python -m ynab_categorizer restore"
+spending-report = "python -m ynab_categorizer spending-report"
+export-public = "python scripts/export_public.py"
+prepare-release = "python scripts/prepare_release.py"
+test = "pytest tests/ -v"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
