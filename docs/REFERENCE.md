@@ -108,6 +108,12 @@ ynab-toolkit amazon-login --install-browser
 
 First use of `amazon-login` prompts for and privately saves these fields; `--configure` prompts again. See the [authenticator key walkthrough](../README.md#finding-the-authenticator-setup-key). For manual configuration, set `AMAZON_USERNAME`, `AMAZON_PASSWORD`, `AMAZON_OTP_SECRET_KEY`, `AMAZON_DOMAIN`, and **`AMAZON_BUDGET_NAME`** in `.env`. Enrichment requires an explicit matching budget name so one person's orders are not used for another budget. `AMAZON_OTP_SECRET_KEY` is the authenticator's base32 secret, not a six-digit code.
 
+If you already use an authenticator and have its setup key, reuse that key. Otherwise, use the app's supported secret/export feature or add another authenticator through Amazon's Two-Step Verification settings. Keep your working recovery method. A six-digit code cannot recover the setup key. See [Amazon's enrollment instructions](https://kdp.amazon.com/en_US/help/topic/G6HTFZJLJ7AJQ56R).
+
+Save your normal Amazon password without a temporary code appended. The toolkit generates the code from the setup key and handles either an appended code or a separate code field. [Amazon's alternate sign-in method](https://digprjsurvey.amazon.co.uk/csad/help/node/201962400).
+
+`--install-browser` installs the matching [Playwright Chromium browser](https://playwright.dev/python/docs/browsers). To sign in again, run `ynab-toolkit amazon-login`; add `--configure` to change saved details. Use `--install-browser` again if a toolkit update requires a newer browser version.
+
 The browser profile is stored at `~/.config/ynab-categorizer/amazon-profile`. Expired sessions can open a login browser; a CAPTCHA or passkey challenge may require interaction. Parsing currently assumes English order dates and dollar-formatted Amazon totals; other marketplace formats are not supported automatically.
 
 ## Budget assignment and verification

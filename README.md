@@ -109,37 +109,25 @@ The toolkit sends transaction and merchant details to your chosen AI provider, i
 
 ### 4. Optional: connect Amazon
 
-Amazon enrichment helps distinguish purchases that all appear as the same Amazon payee. Skip this if you do not need order matching.
+Connect Amazon so the toolkit can use order details to categorize your purchases.
+
+#### Finding the authenticator setup key
+
+1. In Amazon, open **Login & security → Two-Step Verification** and add an **Authenticator App**.
+2. At the QR code, choose the manual-entry option, usually **Can't scan the barcode?** Copy the long setup key.
+3. Add the same key or QR code to your authenticator app. Enter the app's current six-digit code on Amazon to finish enrollment.
+
+Keep the setup key private. **The toolkit needs that long key, not a temporary six-digit code.** [Amazon's illustrated guide](https://m.media-amazon.com/images/G/01/AGS/SEA/2SV_Guide_ASVN._CB1535016505_.pdf).
+
+#### Connect the toolkit
 
 ```bash
 ynab-toolkit amazon-login --install-browser
 ```
 
-On first use, this asks for your Amazon login, password, authenticator secret, Amazon domain, and matching YNAB budget name. The password and secret prompts are hidden, and the answers are saved privately for later runs. The current adapter requires all three login fields. The OTP secret is the authenticator setup secret, **not** a temporary six-digit code. Use `--configure` to enter new details later.
+Enter your Amazon login, normal password, setup key, Amazon domain (such as `amazon.ca`), and YNAB budget name. Finish signing in through the browser that opens. Your details and session are saved locally for later use.
 
-The command then installs the matching [Playwright Chromium browser](https://playwright.dev/python/docs/browsers), opens Amazon, and saves the signed-in session. Complete any interactive challenge in the window. Later, `ynab-toolkit amazon-login` reuses the installed browser. Run with `--install-browser` again if an update requires a newer browser version.
-
-Order matching is enabled only for the budget you name during setup. Amazon parsing currently assumes English order dates and dollar-formatted totals.
-
-#### Finding the authenticator setup key
-
-There are three different pieces of information:
-
-| Item | What to enter |
-| --- | --- |
-| Amazon password | Your normal password, without a code appended. |
-| Authenticator setup key | The long, reusable secret behind the QR code. Paste this at the toolkit's secret prompt. |
-| One-time code | The short changing number generated from that secret. Use it to verify enrollment on Amazon, not as the toolkit's saved secret. |
-
-1. In your Amazon account, open **Login & security**, then the **Two-Step Verification** settings.
-2. Add an **Authenticator App**. If two-step verification is already enabled, use the option to add another authenticator. Keep your working recovery method.
-3. At the enrollment QR code, look for the manual-entry option, often labeled **Can't scan the barcode?** Copy the long setup key it reveals. Labels can vary by Amazon site. [Amazon's enrollment instructions](https://kdp.amazon.com/en_US/help/topic/G6HTFZJLJ7AJQ56R) and [manual-entry walkthrough](https://m.media-amazon.com/images/G/01/AGS/SEA/2SV_Guide_ASVN._CB1535016505_.pdf).
-4. Add that same key or QR code to your authenticator app. Enter its current one-time code on Amazon to finish enrollment; copying the key alone does not finish setup.
-5. Run `ynab-toolkit amazon-login --install-browser` and paste the setup key when asked. Spaces in the key are accepted. A short one-time code is rejected with an explanation.
-
-If you already have an authenticator but did not retain its setup key, use its supported secret/export feature if available, or enroll another authenticator through Amazon. A displayed six-digit code cannot recover the original key. Keep the key private: it can generate future login codes.
-
-Some Amazon sign-in screens ask for a temporary code appended to your password. The toolkit handles this automatically and can also fill a separate code field. **Save only your normal password during setup.** [Amazon's explanation](https://digprjsurvey.amazon.co.uk/csad/help/node/201962400).
+Order matching supports English dates and dollar-formatted totals. For existing authenticators, changing saved details, or signing in again, see the [Amazon reference](docs/REFERENCE.md#optional-amazon-enrichment).
 
 ### 5. Check the connection
 
