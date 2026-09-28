@@ -11,6 +11,7 @@ import httpx
 
 from .client import YNABClient
 from .categorizer import Categorizer, resolve_category
+from .backends import BackendError
 
 
 # Merchants where the payee name alone doesn't tell you what was bought.
@@ -100,7 +101,7 @@ class Orchestrator:
         self._amazon_failed = False
         self._results = []
         self._deferred = []
-        self._unapproved = []
+        self._pending = []
 
     def run(self):
         self._results = []
@@ -131,16 +132,23 @@ class Orchestrator:
 
         categories = self.client.get_categories(budget_id)
         past_transactions = self.client.get_transactions(budget_id)
-        unapproved = self.client.get_unapproved_transactions(budget_id)
-        self._unapproved = unapproved
+        budget_accounts = {a['id'] for a in self.client.get_accounts(budget_id)
+                           if a.get('on_budget') and not a.get('deleted')}
+        past_transactions = [t for t in past_transactions
+                             if t.get('account_id') in budget_accounts and not t.get('deleted')]
+        # Imported categories still need review until approved. Approval marks
+        # a confirmed decision that this command must leave alone.
+        pending = [t for t in past_transactions
+                   if not t.get('approved') and not t.get('transfer_account_id')]
+        self._pending = pending
 
-        if not unapproved:
+        if not pending:
             self.on_no_transactions()
             return self._finish_report()
 
-        self.on_start(unapproved)
+        self.on_start(pending)
 
-        for txn in unapproved:
+        for txn in pending:
             try:
                 self.process_transaction(txn, budget_id, categories, past_transactions)
             except Exception as exc:
@@ -148,8 +156,9 @@ class Orchestrator:
                 # retries) shouldn't discard the work already applied — log it
                 # and move on.
                 payee = txn.get("payee_name") or "Unknown"
-                print(f"\n  ! skipped {payee}: {type(exc).__name__}")
-                self._record(txn, "failed", type(exc).__name__)
+                reason = str(exc) if isinstance(exc, BackendError) else type(exc).__name__
+                print(f"\n  ! skipped {payee}: {reason}")
+                self._record(txn, "failed", reason)
 
         self.second_pass(self._deferred, budget_id, categories, past_transactions)
         report = self._finish_report()
@@ -207,7 +216,7 @@ class Orchestrator:
         ):
             return
         # Unsure (a question), unclear, or a name that didn't resolve — never stop to
-        # ask; hand it to the smarter second pass to reason out automatically.
+        # ask; hand it to the second pass with more context.
         self._defer(txn)
 
     def _defer(self, txn: dict):
@@ -221,11 +230,11 @@ class Orchestrator:
         categories: list[dict],
         past_transactions: list[dict],
     ):
-        """Have the smarter model make an educated guess on the leftovers."""
+        """Review deferred transactions with more context and optional research."""
         if not deferred:
             return
 
-        print(f"\n--- Second pass: {len(deferred)} uncertain, asking a smarter model ---")
+        print(f"\n--- Second pass: {len(deferred)} uncertain, reviewing with more context ---")
         for txn in deferred:
             payee = txn.get("payee_name") or "Unknown"
             amount = txn["amount"] / -1000
@@ -241,7 +250,7 @@ class Orchestrator:
 
             # Give the guesser the surrounding charges from this batch too, so it can
             # read a charge in the context of the ones it sits beside.
-            context = list({t["id"]: t for t in past_transactions + self._unapproved
+            context = list({t["id"]: t for t in past_transactions + self._pending
                             if t.get("id") and t["id"] != txn.get("id") and not t.get("deleted")}.values())
             try:
                 result = self.categorizer.guess(txn, categories, context)
@@ -253,10 +262,11 @@ class Orchestrator:
                 # One slow/failed research call (e.g. a timeout) must not sink the
                 # whole run — surface that transaction and move on.
                 print(" -> NEEDS YOUR INPUT")
-                self._record(txn, "failed", f"second-pass failed: {type(e).__name__}")
+                reason = str(e) if isinstance(e, BackendError) else type(e).__name__
+                self._record(txn, "failed", f"second-pass failed: {reason}")
                 continue
 
-            # Opus genuinely couldn't infer it — surface it to the user rather than
+            # The model couldn't infer it — surface it to the user rather than
             # blind-guessing or silently dropping it.
             reason = self._uncertain_reason(result)
             print(" -> NEEDS YOUR INPUT")
@@ -409,7 +419,7 @@ class Orchestrator:
         self._save_report()
 
     def on_no_transactions(self):
-        print("No unapproved transactions. You're all caught up!")
+        print("No unapproved transactions in budget accounts. You're all caught up!")
 
     def on_start(self, transactions: list[dict]):
         print(f"Found {len(transactions)} unapproved transaction(s).\n")

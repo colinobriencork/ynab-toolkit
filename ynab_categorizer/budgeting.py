@@ -23,7 +23,9 @@ from calendar import monthrange
 from datetime import date, timedelta
 from statistics import median
 
-from .budget_workflow import snapshot, execute_plan, check_snapshot, reserve_card_surplus
+from .budget_workflow import snapshot, execute_plan, check_snapshot, policy_checks, reserve_card_surplus
+from .funding_holds import funding_categories
+from .target_policy import target_report
 
 # Funded in this order; a group is fully funded before the next gets anything.
 # "Infrequent" is deliberately excluded — those are funded by hand. Budgets may
@@ -181,7 +183,7 @@ def assign_funds(
     """Fund rollover debt, current overspending, then targets. Dry run
     unless apply=True."""
     options = options or {}
-    before = snapshot(client, budget_id)
+    before = snapshot(client, budget_id, options.get("month", "current"))
     month, categories, accounts = before["month"], before["categories"], before["accounts"]
     rta = month["to_be_budgeted"]
     prev_categories, month_txns = _rollover_inputs(client, budget_id, month)
@@ -201,8 +203,11 @@ def assign_funds(
     overspending_plan, target_categories = plan_overspending(categories, remaining)
     remaining -= sum(amount for _, amount in overspending_plan)
     plan += overspending_plan
+    target_categories = funding_categories(target_categories, budget_id, month["month"],
+                                          options.get("refill_rebalanced", False), options)
     plan += plan_assignments(remaining, target_categories, priority_groups)
     plan = combine_assignments(plan)
+    options = {**options, 'report_metadata': {'target_funding': target_report(target_categories)}}
 
     if not plan:
         print(f"Ready to Assign: ${rta / 1000:.2f} — " +
@@ -224,7 +229,7 @@ def last_day_of_previous_month(today: date) -> date:
 # --- phantom assign: forward-plan discretionary money ----------------------
 
 
-def detect_biweekly_income(transactions: list[dict], today: date):
+def detect_biweekly_income(transactions: list[dict], today: date, month: date | None = None):
     """Project this month's remaining paydays from the paycheque record.
 
     A payee whose Ready-to-Assign inflows land a median of ~14 days apart is a
@@ -232,7 +237,7 @@ def detect_biweekly_income(transactions: list[dict], today: date):
     the last one received. Missed paydays invalidate the pattern; unusually
     large latest payments use the recent median to avoid projecting bonuses.
     Returns date-sorted ``(date, amount)`` pairs after ``today``,
-    through month end.
+    within the selected month. Payroll freshness is always checked as of today.
     """
     by_payee = {}
     for t in transactions:
@@ -244,7 +249,9 @@ def detect_biweekly_income(transactions: list[dict], today: date):
             continue
         by_payee.setdefault(t["payee_name"], []).append(t)
 
-    month_end = date(today.year, today.month, monthrange(today.year, today.month)[1])
+    month_start = (month or today).replace(day=1)
+    month_end = date(month_start.year, month_start.month,
+                     monthrange(month_start.year, month_start.month)[1])
     lo, hi = BIWEEKLY_GAP_RANGE
     paydays = []
     for txns in by_payee.values():
@@ -262,7 +269,7 @@ def detect_biweekly_income(transactions: list[dict], today: date):
         amount = latest if latest <= baseline * 1.2 else baseline
         nxt = dates[-1] + timedelta(days=14)
         while nxt <= month_end:
-            if nxt > today:
+            if nxt > today and nxt >= month_start:
                 paydays.append((nxt, amount))
             nxt += timedelta(days=14)
     return sorted(paydays)
@@ -304,10 +311,17 @@ def plan_phantom_assignments(pot: int, categories: list[dict], avg_spend: dict, 
         raise ValueError("wants_mode must be refill or accumulate")
     needs = []
     for cat in categories:
-        if cat.get("hidden") or not _in_group(cat, options.get("discretionary_group", DISCRETIONARY_GROUP)):
+        if cat.get("hidden") or cat.get("_rebalance_hold") or not _in_group(cat, options.get("discretionary_group", DISCRETIONARY_GROUP)):
             continue
         spent = max(0, -(cat.get("activity") or 0))
         overrides = options.get("wants_overrides", {})
+        policy = cat.get('_target_funding')
+        if (policy and cat.get('goal_type') and (cat.get('goal_target') or 0) > 0
+                and cat['id'] not in overrides and cat['name'] not in overrides):
+            needed = policy['additional_needed']
+            if needed > 0:
+                needs.append((cat, needed))
+            continue
         allowance = overrides.get(cat["id"], overrides.get(cat["name"], avg_spend.get(cat["id"], 0)))
         month_plan = max(allowance, spent)
         funding = cat.get("budgeted") or 0
@@ -346,7 +360,7 @@ def phantom_assign(client, budget_id: str, today: date, apply: bool = False, opt
     possible; actual balances are verified separately after applying.
     """
     options = options or {}
-    before = snapshot(client, budget_id)
+    before = snapshot(client, budget_id, options.get("month", "current"))
     month, categories, accounts = before["month"], before["categories"], before["accounts"]
     since = (today - timedelta(days=PAYDAY_LOOKBACK_DAYS)).isoformat()
     transactions = client.get_transactions(budget_id, since_date=since)
@@ -360,6 +374,8 @@ def phantom_assign(client, budget_id: str, today: date, apply: bool = False, opt
     cc_plan = reserve_card_surplus(plan_cc_debt_coverage(accounts, categories, prev_categories, month_txns), before)
     cc_debt = sum(amt for _, amt in cc_plan)
     overspending_plan, adjusted_categories = plan_overspending(categories)
+    adjusted_categories = funding_categories(adjusted_categories, budget_id, month["month"],
+                                            options.get("refill_rebalanced", False), options)
     overspending = sum(amt for _, amt in overspending_plan)
     committed_groups = [g for g in options.get("priority_groups", DEFAULT_PRIORITY_GROUPS)
                         if g != options.get("discretionary_group", DISCRETIONARY_GROUP)]
@@ -372,6 +388,9 @@ def phantom_assign(client, budget_id: str, today: date, apply: bool = False, opt
 
     pot = rta + future_income - cc_debt - overspending - committed
 
+    print(f"Planning month: {month['month'][:7]} (balances as of {today})")
+    if month["month"] > today.replace(day=1).isoformat():
+        print("Provisional: remaining spending and month-end target rollover can change this plan.")
     print(f"Ready to Assign now:             ${rta / 1000:>10.2f}")
     for d, amount in paydays:
         print(f"+ expected payday {d}:     ${amount / 1000:>10.2f}")
@@ -396,6 +415,7 @@ def phantom_assign(client, budget_id: str, today: date, apply: bool = False, opt
 
 
     plan = combine_assignments(cc_plan + overspending_plan + committed_plan + wants_plan)
+    options = {**options, 'report_metadata': {'target_funding': target_report(adjusted_categories)}}
     print(f"{'APPLYING' if apply else 'DRY RUN'} — funding {len(plan)} categories:")
     print(f"Projected Ready to Assign: ${(rta - sum(n for _, n in plan)) / 1000:.2f}")
     return execute_plan(client, budget_id, before, plan, apply, future_income, options=options)
@@ -403,15 +423,16 @@ def phantom_assign(client, budget_id: str, today: date, apply: bool = False, opt
 
 def projected_income(transactions, today, options=None):
     options = options or {}
+    month = date.fromisoformat(options["month"]) if options.get("month") else today.replace(day=1)
     if "income_schedule" not in options:
-        return detect_biweekly_income(transactions, today)
+        return detect_biweekly_income(transactions, today, month)
     result = []
     for payment in options["income_schedule"]:
         day = date.fromisoformat(payment["date"])
         amount = payment["amount"]
         if not isinstance(amount, int) or isinstance(amount, bool) or amount < 0:
             raise ValueError("income_schedule amounts must be nonnegative integer milliunits")
-        if today < day and (day.year, day.month) == (today.year, today.month):
+        if today < day and (day.year, day.month) == (month.year, month.month):
             result.append((day, amount))
     return sorted(result)
 
@@ -419,9 +440,12 @@ def projected_income(transactions, today, options=None):
 def budget_check(client, budget_id, today=None, options=None):
     """Read-only actual balances and expected-income coverage."""
     today = today or date.today()
-    state = snapshot(client, budget_id)
+    options = options or {}
+    state = snapshot(client, budget_id, options.get("month", "current"))
     txns = client.get_transactions(budget_id, since_date=(today - timedelta(days=PAYDAY_LOOKBACK_DAYS)).isoformat())
-    checks = check_snapshot(state, sum(n for _, n in projected_income(txns, today, options)))
+    checks = policy_checks(state, budget_id, sum(n for _, n in projected_income(txns, today, options)), options)
+    checks["month"] = state["month"]["month"]
+    print(f"Budget month: {checks['month'][:7]}")
     print(f"Ready to Assign: ${checks['ready_to_assign'] / 1000:.2f}")
     print(f"After expected income: ${checks['forecast_remaining'] / 1000:.2f}")
     print(f"Funding status: {checks['funding_status'].replace('_', ' ')}")

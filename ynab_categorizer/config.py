@@ -9,13 +9,32 @@ budget names or credentials.
 from __future__ import annotations
 
 import os
+import json
 import tomllib
 from pathlib import Path
 from typing import Any
 from datetime import date
 
+from .backends import BACKENDS, validate_command
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "config.toml"
+
+
+def config_file_path(config_path: str | Path | None = None) -> Path:
+    """Select one settings directory without mixing credentials from projects."""
+    explicit = config_path or os.environ.get("YNAB_TOOLKIT_CONFIG")
+    if explicit:
+        return Path(explicit).expanduser()
+    # Preserve existing source checkouts. Installed wheels must never write
+    # credentials into site-packages or read an unrelated working directory.
+    metadata = PROJECT_ROOT / "pyproject.toml"
+    if metadata.is_file():
+        with metadata.open("rb") as stream:
+            source_project = tomllib.load(stream).get("project", {}).get("name")
+        if source_project == "ynab-toolkit":
+            return PROJECT_ROOT / "config.toml"
+    base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+    return base / "ynab-toolkit" / "config.toml"
 
 # Keep this list in one place so spend-watch and the categorizer receive the
 # same environment precedence rules.
@@ -28,7 +47,11 @@ OPTION_KEYS = {
     "priority_groups", "discretionary_group", "wants_mode", "wants_overrides",
     "income_schedule", "group_roles", "merchant_rules", "model", "guess_model",
     "timeout", "guess_timeout", "report_path", "monthly_income", "warn_ratio",
-    "near_limit_ratio", "currency_decimal_digits",
+    "near_limit_ratio", "currency_decimal_digits", "backend", "backend_command",
+    "guess_backend_command",
+    "rebalance_protected_groups", "rebalance_protected_categories",
+    "rebalance_keep", "rebalance_last_categories",
+    "spending_target_mode", "accumulate_categories",
 }
 TOP_LEVEL_KEYS = {"defaults", "budgets", "savings_pairs", "default_budget"} | SUPPORTED_ENV_KEYS
 
@@ -67,10 +90,17 @@ def _validate_options(options: Any, where: str) -> None:
     unknown = set(options) - OPTION_KEYS
     if unknown:
         raise ValueError(f"Unknown option(s) in [{where}]: {', '.join(sorted(unknown))}")
+    if "backend" in options and options["backend"] not in BACKENDS:
+        raise ValueError(f"backend must be one of {', '.join(BACKENDS)}")
+    for key in ("backend_command", "guess_backend_command"):
+        if key in options:
+            validate_command(options[key], key)
     if "currency_decimal_digits" in options and (type(options["currency_decimal_digits"]) is not int or options["currency_decimal_digits"] not in range(4)):
         raise ValueError("currency_decimal_digits must be 0, 1, 2, or 3")
     if "wants_mode" in options and options["wants_mode"] not in {"refill", "accumulate"}:
         raise ValueError("wants_mode must be 'refill' or 'accumulate'")
+    if options.get('spending_target_mode', 'refill') not in ('refill', 'ynab'):
+        raise ValueError("spending_target_mode must be 'refill' or 'ynab'")
     for key in ("model", "guess_model", "discretionary_group"):
         if key in options and not isinstance(options[key], str):
             raise ValueError(f"{key} must be a string")
@@ -78,15 +108,16 @@ def _validate_options(options: Any, where: str) -> None:
         if key in options and (isinstance(options[key], bool) or not isinstance(options[key], int)
                                or options[key] <= 0):
             raise ValueError(f"{key} must be a positive integer")
-    if "priority_groups" in options and (
-        not isinstance(options["priority_groups"], list)
-        or not all(isinstance(x, str) for x in options["priority_groups"])
-    ):
-        raise ValueError("priority_groups must be a list of strings")
+    for key in ("priority_groups", "rebalance_protected_groups",
+                "rebalance_protected_categories", "rebalance_last_categories",
+                "accumulate_categories"):
+        if key in options and (not isinstance(options[key], list)
+                               or not all(isinstance(x, str) and x.strip() for x in options[key])):
+            raise ValueError(f"{key} must be a list of nonempty strings")
     for key in ("monthly_income", "warn_ratio", "near_limit_ratio"):
         if key in options and (isinstance(options[key], bool) or not isinstance(options[key], (int, float))):
             raise ValueError(f"{key} must be numeric")
-    for key in ("wants_overrides", "merchant_rules", "group_roles"):
+    for key in ("wants_overrides", "merchant_rules", "group_roles", "rebalance_keep"):
         if key in options and not isinstance(options[key], dict):
             raise ValueError(f"{key} must be a table")
     if "monthly_income" in options and (not isinstance(options["monthly_income"], int) or options["monthly_income"] <= 0):
@@ -96,6 +127,8 @@ def _validate_options(options: Any, where: str) -> None:
             raise ValueError(f"{key} must be between zero and one")
     if any(not isinstance(v, int) or isinstance(v, bool) or v < 0 for v in options.get("wants_overrides", {}).values()):
         raise ValueError("wants_overrides must map categories to nonnegative integer milliunits")
+    if any(type(v) is not int or v < 0 for v in options.get("rebalance_keep", {}).values()):
+        raise ValueError("rebalance_keep must map categories to nonnegative integer milliunits")
     if any(not isinstance(v, str) or not v.strip() for v in options.get("merchant_rules", {}).values()):
         raise ValueError("merchant_rules must map payees to nonempty category strings")
     if any(v not in {"spending", "saving", "repayment", "exclude"} for v in options.get("group_roles", {}).values()):
@@ -129,7 +162,15 @@ def _read_env(path: Path) -> dict[str, str]:
         line = raw.strip()
         if line and not line.startswith("#") and "=" in line:
             key, value = line.split("=", 1)
-            result[key.strip()] = value.strip().strip('"').strip("'")
+            value = value.strip()
+            if len(value) >= 2 and value[0] == value[-1] == '"':
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    value = value[1:-1]  # existing dotenv files may contain raw backslashes
+            elif len(value) >= 2 and value[0] == value[-1] == "'":
+                value = value[1:-1]
+            result[key.strip()] = value
     return result
 
 
@@ -141,9 +182,10 @@ def load_config(config_path: str | Path | None = None,
     process environment wins over both files for every supported key. Unknown
     TOML options are rejected before connecting to YNAB.
     """
-    toml_path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
-    data = {} if config_path is None and not toml_path.exists() else _read_toml(toml_path)
-    env_file = Path(env_path) if env_path else PROJECT_ROOT / ".env"
+    toml_path = config_file_path(config_path)
+    explicit = config_path is not None or bool(os.environ.get("YNAB_TOOLKIT_CONFIG"))
+    data = {} if not explicit and not toml_path.exists() else _read_toml(toml_path)
+    env_file = Path(env_path).expanduser() if env_path else toml_path.parent / ".env"
     for key, value in _read_env(env_file).items():
         data[key] = value
     for key in SUPPORTED_ENV_KEYS | {
@@ -165,6 +207,10 @@ def budget_options(config: dict[str, Any], budget: dict) -> dict[str, Any]:
         raise ValueError("[budgets] must be a TOML table")
     for key in (budget.get("id"), budget.get("name")):
         if key and isinstance(budgets.get(key), dict):
+            override = budgets[key]
+            if "backend" in override and override["backend"] != result.get("backend", "claude"):
+                result.pop("model", None)
+                result.pop("guess_model", None)
             for option, value in budgets[key].items():
                 if isinstance(value, dict) and isinstance(result.get(option), dict):
                     result[option] = {**result[option], **value}

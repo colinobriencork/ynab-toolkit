@@ -68,6 +68,28 @@ def test_preview_explicit_report_records_plan_without_api_writes(tmp_path):
     assert json.loads(path.read_text())["status"] == "preview"
 
 
+@pytest.mark.parametrize('assignment,income,status,remaining', [
+    (110_000, 20_000, 'depends_on_expected_income', 10_000),
+    (110_000, 5_000, 'uncovered', -5_000),
+    (50_000, 0, 'cash_backed', 50_000),
+])
+def test_preview_distinguishes_current_cash_from_proposed_funding(tmp_path, assignment, income, status, remaining):
+    client = Budget()
+    before = snapshot(client, 'b')
+    path = tmp_path / 'preview.json'
+    result = execute_plan(client, 'b', before, [(before['categories'][0], assignment)],
+                          expected_income=income, options={'report_path': path})
+    assert result['checks']['funding_status'] == 'cash_backed'
+    assert result['checks_scope'] == 'before_assignments'
+    assert result['projection']['funding_status'] == status
+    assert result['projection']['remaining_after_expected_income'] == remaining
+    assert result['projection']['ready_to_assign_after_assignments'] == 100_000 - assignment
+    saved = json.loads(path.read_text())
+    assert saved['projection'] == result['projection']
+    assert saved['checks_scope'] == 'before_assignments'
+    assert client.calls == 0
+
+
 def test_partial_failure_records_uncertain_write_and_stops(tmp_path):
     client = Budget()
     client.fail_at = 3
@@ -124,6 +146,62 @@ def test_explicit_income_schedule_replaces_detection():
     assert projected_income([], date(2015, 9, 7), {"income_schedule": [
         {"date": "2015-09-07", "amount": 10}, {"date": "2015-09-30", "amount": 20},
         {"date": "2015-10-01", "amount": 30}]}) == [(date(2015, 9, 30), 20)]
+
+
+def test_future_payroll_includes_first_day_and_checks_freshness_as_of_today():
+    txns = payroll(['2015-08-20', '2015-09-03', '2015-09-17'], [20_000] * 3)
+    options = {'month': '2015-10-01'}
+    assert projected_income(txns, date(2015, 9, 20), options) == [
+        (date(2015, 10, 1), 20_000), (date(2015, 10, 15), 20_000), (date(2015, 10, 29), 20_000)]
+    assert projected_income(txns, date(2015, 10, 20), {'month': '2015-11-01'}) == []
+
+
+def test_explicit_future_income_uses_selected_month():
+    options = {'month': '2015-10-01', 'income_schedule': [
+        {'date': '2015-09-30', 'amount': 10}, {'date': '2015-10-01', 'amount': 20},
+        {'date': '2015-10-15', 'amount': 30}, {'date': '2015-11-01', 'amount': 40}]}
+    assert projected_income([], date(2015, 9, 20), options) == [
+        (date(2015, 10, 1), 20), (date(2015, 10, 15), 30)]
+
+
+@pytest.mark.parametrize('apply', [False, True])
+def test_selected_month_is_used_for_snapshot_writes_and_verification(tmp_path, apply):
+    class Months:
+        def __init__(self):
+            self.data = {m: {'month': m, 'to_be_budgeted': 50_000, 'categories': [
+                {'id': 'food', 'name': 'Food', 'group_name': 'Needs',
+                 'budgeted': 0, 'balance': 0}]} for m in ('2015-09-01', '2015-10-01')}
+            self.reads = []
+            self.writes = []
+
+        def get_month(self, budget, month='current'):
+            self.reads.append(month)
+            return deepcopy(self.data['2015-09-01' if month == 'current' else month])
+
+        def get_categories(self, budget):
+            return deepcopy(self.data['2015-09-01']['categories'])
+
+        def get_accounts(self, budget):
+            return []
+
+        def update_month_category(self, budget, month, category_id, budgeted):
+            self.writes.append(month)
+            category = self.data[month]['categories'][0]
+            delta = budgeted - category['budgeted']
+            category['budgeted'] = budgeted
+            category['balance'] += delta
+            self.data[month]['to_be_budgeted'] -= delta
+
+    client = Months()
+    before = snapshot(client, 'b', '2015-10-01')
+    result = execute_plan(client, 'b', before, [(before['categories'][0], 10_000)], apply,
+                          options={'month': '2015-10-01', 'report_path': tmp_path / 'run.json'})
+    assert result['month'] == '2015-10-01'
+    assert set(client.reads) == {'2015-10-01'}
+    assert client.data['2015-09-01']['categories'][0]['budgeted'] == 0
+    assert client.writes == (['2015-10-01'] if apply else [])
+    assert result['status'] == ('applied' if apply else 'preview')
+    assert json.loads((tmp_path / 'run.json').read_text())['month'] == '2015-10-01'
 
 
 def test_wants_can_refill_or_accumulate_with_override():

@@ -313,7 +313,7 @@ def test_run_claude_enables_requested_tools(monkeypatch):
         return sp.CompletedProcess(cmd, 0, stdout="CATEGORY: Dining Out", stderr="")
 
     monkeypatch.setattr(
-        "ynab_categorizer.categorizer.subprocess.run", fake_run
+        "ynab_categorizer.backends.subprocess.run", fake_run
     )
 
     out = _run_claude(
@@ -341,7 +341,7 @@ def test_run_claude_passes_prompt_via_stdin_not_argv(monkeypatch):
         return sp.CompletedProcess(cmd, 0, stdout="CATEGORY: Dining Out", stderr="")
 
     monkeypatch.setattr(
-        "ynab_categorizer.categorizer.subprocess.run", fake_run
+        "ynab_categorizer.backends.subprocess.run", fake_run
     )
 
     _run_claude("PROMPT-TEXT", allowed_tools=["WebSearch", "WebFetch"])
@@ -361,7 +361,7 @@ def test_default_second_pass_researches_web_with_opus(monkeypatch):
         return sp.CompletedProcess(cmd, 0, stdout="CATEGORY: Dining Out", stderr="")
 
     monkeypatch.setattr(
-        "ynab_categorizer.categorizer.subprocess.run", fake_run
+        "ynab_categorizer.backends.subprocess.run", fake_run
     )
 
     txn = {**SAMPLE_TRANSACTION, "payee_name": "SQ *EXAMPLE SHOP", "amount": -2250}
@@ -410,8 +410,8 @@ def test_category_resolution_uses_group_and_rejects_ambiguity():
 
 def test_model_and_timeout_overrides(monkeypatch):
     calls = []
-    monkeypatch.setattr("ynab_categorizer.categorizer._run_claude",
-                        lambda prompt, **kw: calls.append(kw) or "CATEGORY: Dining Out")
+    monkeypatch.setattr("ynab_categorizer.backends.ClaudeBackend.generate",
+                        lambda self, prompt, **kw: calls.append(kw) or "CATEGORY: Dining Out")
     c = Categorizer(model="fast", guess_model="slow", timeout=12, guess_timeout=34)
     c.suggest(SAMPLE_TRANSACTION, SAMPLE_CATEGORIES, [])
     c.guess(SAMPLE_TRANSACTION, SAMPLE_CATEGORIES, [])
@@ -426,7 +426,7 @@ def test_builtin_tools_are_explicitly_limited(monkeypatch):
     def run(cmd, **kwargs):
         calls.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="CATEGORY: Dining Out", stderr="")
-    monkeypatch.setattr("ynab_categorizer.categorizer.subprocess.run", run)
+    monkeypatch.setattr("ynab_categorizer.backends.subprocess.run", run)
     _run_claude("test")
     _run_claude("test", allowed_tools=["WebSearch", "WebFetch"])
     assert calls[0][calls[0].index("--tools") + 1] == ""
@@ -444,5 +444,5 @@ def test_claude_environment_excludes_unrelated_credentials(monkeypatch):
         assert not set(secret_keys).intersection(kwargs["env"])
         assert kwargs["env"]["PATH"] == "/usr/bin"
         return subprocess.CompletedProcess(cmd, 0, stdout="CATEGORY: Dining Out", stderr="")
-    monkeypatch.setattr("ynab_categorizer.categorizer.subprocess.run", run)
+    monkeypatch.setattr("ynab_categorizer.backends.subprocess.run", run)
     _run_claude("test")

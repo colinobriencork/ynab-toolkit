@@ -5,28 +5,30 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import tomllib
 import zipfile
 
-from export_public import export_public
+from export_public import ROOT, export_public
 
 
 def prepare_release(destination):
     root = Path(destination).resolve()
     if root.exists():
         raise ValueError('Choose a new release destination')
-    source = root / 'ynab-toolkit-0.1.1'
+    version = tomllib.loads((ROOT / 'pyproject.toml').read_text())['project']['version']
+    source = root / f'ynab-toolkit-{version}'
     export_public(source)
     # Capture the allowlisted payload before testing generates caches.
     paths = sorted(p for p in source.rglob('*') if p.is_file())
     subprocess.run([sys.executable, '-m', 'pytest', '-q'], cwd=source, check=True)
-    archive = root / 'ynab-toolkit-0.1.1.zip'
+    archive = root / f'ynab-toolkit-{version}.zip'
     with zipfile.ZipFile(archive, 'w', zipfile.ZIP_DEFLATED) as bundle:
         for path in paths:
             bundle.write(path, Path(source.name) / path.relative_to(source))
     digest = hashlib.sha256(archive.read_bytes()).hexdigest()
     (root / 'SHA256SUMS').write_text(f'{digest}  {archive.name}\n')
     (root / 'release-validation.json').write_text(json.dumps({
-        'version': '0.1.1', 'python': sys.version.split()[0],
+        'version': version, 'python': sys.version.split()[0],
         'source_tests': 'passed', 'files': len(paths),
         'archive': archive.name, 'sha256': digest,
         'live_write_validation': 'pending dedicated test budget',

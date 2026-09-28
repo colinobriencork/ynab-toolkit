@@ -1,6 +1,6 @@
 [project]
 name = "ynab-toolkit"
-version = "0.1.1"
+version = "0.2.0"
 description = "Configurable YNAB categorization, budget planning, and verification"
 authors = [
     {name = "Colin O'Brien"},
@@ -15,8 +15,20 @@ requires-python = ">=3.13"
 readme = "README.md"
 license = {text = "MIT"}
 
+[project.scripts]
+ynab-toolkit = "ynab_toolkit.__main__:main"
+ynab_toolkit = "ynab_toolkit.__main__:main"
+
+[build-system]
+requires = ["pdm-backend>=2.4,<3"]
+build-backend = "pdm.backend"
+
 [tool.pdm]
-distribution = false
+distribution = true
+
+[tool.pdm.build]
+includes = ["ynab_categorizer/*.py", "ynab_toolkit/*.py"]
+source-includes = [".env.example", "config.example.toml", "CHANGELOG.md", "PRIVACY.md", "LICENSE", "docs/REFERENCE.md"]
 
 [tool.pdm.dev-dependencies]
 test = [
@@ -26,16 +38,19 @@ test = [
 ]
 
 [tool.pdm.scripts]
-categorize = "python -m ynab_categorizer"
-assign = "python -m ynab_categorizer assign"
-phantom-assign = "python -m ynab_categorizer phantom-assign"
-spend-watch = "python -m ynab_categorizer spend-watch"
-setup = "python -m ynab_categorizer setup"
-amazon-login = "python -m ynab_categorizer amazon-login"
-budget-check = "python -m ynab_categorizer budget-check"
-correct = "python -m ynab_categorizer correct"
-restore = "python -m ynab_categorizer restore"
-spending-report = "python -m ynab_categorizer spending-report"
+ynab-toolkit = "python -m ynab_toolkit"
+ynab_toolkit = "python -m ynab_toolkit"
+categorize = "python -m ynab_toolkit categorize"
+assign = "python -m ynab_toolkit assign"
+phantom-assign = "python -m ynab_toolkit phantom-assign"
+spend-watch = "python -m ynab_toolkit spend-watch"
+setup = "python -m ynab_toolkit setup"
+amazon-login = "python -m ynab_toolkit amazon-login"
+budget-check = "python -m ynab_toolkit budget-check"
+correct = "python -m ynab_toolkit correct"
+restore = "python -m ynab_toolkit restore"
+spending-report = "python -m ynab_toolkit spending-report"
+rebalance = "python -m ynab_toolkit rebalance"
 export-public = "python scripts/export_public.py"
 prepare-release = "python scripts/prepare_release.py"
 test = "pytest tests/ -v"

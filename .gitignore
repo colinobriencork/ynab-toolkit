@@ -3,6 +3,7 @@ __pycache__/
 .venv/
 .pdm-python
 pdm_build/
+.pdm-build/
 dist/
 *.egg-info/
 .env

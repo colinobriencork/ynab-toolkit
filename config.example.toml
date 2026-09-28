@@ -3,13 +3,30 @@
 
 [defaults]
 # Categorizer and budget options are optional and may be overridden per budget.
-model = "haiku"
-guess_model = "opus"
+backend = "claude" # claude, codex, or command
+# Models are optional and provider-specific. Claude defaults to haiku/opus;
+# Codex uses its CLI default for both passes. Remove Claude aliases when switching.
+# model = "haiku"
+# guess_model = "opus"
+# For a trusted custom CLI or API wrapper (stdin prompt -> stdout final response):
+# backend_command = ["/absolute/path/to/wrapper", "--model", "{model}"]
+# guess_backend_command = ["/absolute/path/to/second-pass-wrapper"]
 timeout = 60
 guess_timeout = 180
 wants_mode = "refill" # refill or accumulate
 priority_groups = ["Bills", "Needs", "Savings", "Wants"]
 discretionary_group = "Wants"
+# Ordinary monthly/weekly spending targets count existing funding, including
+# carryover. Use "ynab" to retain YNAB's own Set Aside / Refill behavior instead.
+spending_target_mode = "refill"
+# Additional accumulating categories (Savings/Infrequent are always reserved).
+# accumulate_categories = ["Bills: Annual reserve"]
+# Rebalance keeps Savings, Infrequent, longer-term targets and scheduled costs.
+# These lists add protections; IDs or exact category names also work.
+# rebalance_protected_groups = ["Emergency funds"]
+# rebalance_protected_categories = ["Bills: Upcoming service"]
+# rebalance_keep = { "Needs: Transport" = 5000 } # keep 5 currency units
+# rebalance_last_categories = ["Needs: Reimbursements"]
 
 [savings_pairs]
 # Leave this table empty to disable comparisons. Example:

@@ -2,12 +2,14 @@
 from copy import deepcopy
 
 from .audit import write_report
+from .funding_holds import funding_categories
+from .target_policy import target_report
 
 CC_GROUP = "Credit Card Payments"
 
 
-def snapshot(client, budget_id):
-    month = client.get_month(budget_id)
+def snapshot(client, budget_id, month="current"):
+    month = client.get_month(budget_id, month)
     visible = client.get_categories(budget_id)
     accounts = client.get_accounts(budget_id)
     metadata = {c["id"]: c for c in visible}
@@ -86,6 +88,15 @@ def check_snapshot(state, expected_income=0):
     }
 
 
+def policy_checks(state, budget_id, expected_income=0, options=None):
+    options = options or {}
+    categories = funding_categories(state['categories'], budget_id, state['month']['month'],
+                                    options.get('refill_rebalanced', False), options)
+    checks = check_snapshot({**state, 'categories': categories}, expected_income)
+    checks['target_funding'] = target_report(categories)
+    return checks
+
+
 def execute_plan(client, budget_id, before, plan, apply=False, expected_income=0, options=None):
     """Record every successful write and stop on first failure; no blind rollback.
 
@@ -93,7 +104,9 @@ def execute_plan(client, budget_id, before, plan, apply=False, expected_income=0
     have reached YNAB. Dry runs display current-state possibilities, not promises.
     """
     options = options or {}
+    month_selector = options.get("month", "current")
     result = {"status": "preview", "before": before, "after": None,
+              "month": before["month"]["month"],
               "planned": [{"id": c["id"], "name": c["name"], "delta": n} for c, n in plan],
               "completed": [], "failed": None, "checks": None}
     for c, amount in plan:
@@ -103,16 +116,30 @@ def execute_plan(client, budget_id, before, plan, apply=False, expected_income=0
         for donor, receiver, amount in moves:
             print(f"  Possible card transfer: ${amount / 1000:.2f} {donor['name']} -> {receiver['name']} (rechecked after funding)")
         print("(dry run — re-run with --apply to assign; card transfers depend on refreshed balances)")
-        result["checks"] = check_snapshot(before, expected_income)
+        result["checks"] = policy_checks(before, budget_id, expected_income, options)
         result["projected_rta"] = before["month"]["to_be_budgeted"] - sum(n for _, n in plan)
+        forecast_remaining = result["projected_rta"] + expected_income
+        result["projection"] = {
+            "ready_to_assign_after_assignments": result["projected_rta"],
+            "expected_income": expected_income,
+            "remaining_after_expected_income": forecast_remaining,
+            "funding_status": ("uncovered" if forecast_remaining < 0 else
+                               "depends_on_expected_income" if result["projected_rta"] < 0 else
+                               "cash_backed"),
+        }
+        result["checks_scope"] = "before_assignments"
+        print(f"Proposed funding status: {result['projection']['funding_status'].replace('_', ' ')}")
         if options.get("report_path"):
             result["report_path"] = write_report({"kind": "budget_assignment", "budget_id": budget_id,
-                "status": "preview", "operations": [], "planned": result["planned"],
-                "checks": result["checks"], "projected_rta": result["projected_rta"]}, options["report_path"])
+                "status": "preview", "month": result["month"], "operations": [], "planned": result["planned"],
+                "checks": result["checks"], "projected_rta": result["projected_rta"],
+                "checks_scope": result["checks_scope"], "projection": result["projection"],
+                **options.get("report_metadata", {})}, options["report_path"])
         return result
 
     options = options or {}
-    journal = {"kind": "budget_assignment", "budget_id": budget_id, "operations": [], "status": "applying"}
+    journal = {"kind": "budget_assignment", "budget_id": budget_id, "month": result["month"],
+               "operations": [], "status": "applying", **options.get("report_metadata", {})}
     report_path = options.get("report_path")
     current_write = None
 
@@ -122,7 +149,7 @@ def execute_plan(client, budget_id, before, plan, apply=False, expected_income=0
         result["report_path"] = report_path
 
     def write(category_id, before_amount, after_amount, stage):
-        live_month = client.get_month(budget_id)
+        live_month = client.get_month(budget_id, month_selector)
         if live_month["month"] != month:
             raise RuntimeError("Budget month changed")
         live_categories = live_month.get("categories")
@@ -131,18 +158,29 @@ def execute_plan(client, budget_id, before, plan, apply=False, expected_income=0
         live = next((c for c in live_categories if c["id"] == category_id), None)
         if live is None or (live.get("budgeted") or 0) != before_amount:
             raise RuntimeError("Category assignment changed before write")
+        delta = after_amount - before_amount
+        minimums = options.get("minimum_balances", {})
+        if delta < 0 and category_id in minimums:
+            if (live.get("balance") or 0) + delta < minimums[category_id]:
+                raise RuntimeError("Donor balance changed before write")
+            guard = options.get("donor_guard")
+            if guard:
+                guard(category_id)
         operation = {"kind": "category", "budget_id": budget_id, "month": month,
                      "category_id": category_id, "before": before_amount,
                      "after": after_amount, "status": "writing", "stage": stage}
         journal["operations"].append(operation)
         save()
+        if delta < 0 and stage == "funding" and options.get("hold_rebalanced_funding"):
+            from .funding_holds import hold_category
+            hold_category(budget_id, month, category_id)
         client.update_month_category(budget_id, month, category_id, budgeted=after_amount)
         operation["status"] = "completed"
         save()
 
     try:
         # Reject a stale preview before performing any writes.
-        fresh = snapshot(client, budget_id)
+        fresh = snapshot(client, budget_id, month_selector)
         if fresh != before:
             result["status"] = "stale"
             print("Budget changed while planning; no changes applied. Run again.")
@@ -155,7 +193,7 @@ def execute_plan(client, budget_id, before, plan, apply=False, expected_income=0
                              "delta": amount, "stage": "funding"}
             write(c["id"], c.get("budgeted") or 0, current_write["budgeted"], "funding")
             result["completed"].append(current_write)
-        fresh = snapshot(client, budget_id)
+        fresh = snapshot(client, budget_id, month_selector)
         if fresh["month"]["month"] != month:
             raise RuntimeError("Month changed during application; reconciliation stopped")
         assigned = {c["id"]: c.get("budgeted") or 0 for c in fresh["categories"]}
@@ -168,15 +206,19 @@ def execute_plan(client, budget_id, before, plan, apply=False, expected_income=0
                 assigned[c["id"]] = current_write["budgeted"]
                 result["completed"].append(current_write)
         current_write = None
-        result["after"] = snapshot(client, budget_id)
-        result["checks"] = check_snapshot(result["after"], expected_income)
+        result["after"] = snapshot(client, budget_id, month_selector)
+        result["checks"] = policy_checks(result["after"], budget_id, expected_income, options)
         expected_rta = before["month"]["to_be_budgeted"] - sum(w["delta"] for w in result["completed"])
         result["checks"]["month_matches"] = result["after"]["month"]["month"] == month
         result["checks"]["rta_matches"] = result["checks"]["ready_to_assign"] == expected_rta
         actual = {c["id"]: c.get("budgeted") or 0 for c in result["after"]["categories"]}
         last_writes = {w["id"]: w["budgeted"] for w in result["completed"]}
         result["checks"]["assignments_match"] = all(actual.get(cid) == n for cid, n in last_writes.items())
-        result["status"] = "applied" if result["checks"]["month_matches"] and result["checks"]["rta_matches"] and result["checks"]["assignments_match"] else "verification_failed"
+        balances = {c["id"]: c.get("balance") or 0 for c in result["after"]["categories"]}
+        result["checks"]["minimum_balances_preserved"] = all(
+            balances.get(cid, -1) >= floor for cid, floor in options.get("minimum_balances", {}).items())
+        result["status"] = "applied" if all(result["checks"][key] for key in (
+            "month_matches", "rta_matches", "assignments_match", "minimum_balances_preserved")) else "verification_failed"
         print(f"Verified Ready to Assign: ${result['checks']['ready_to_assign'] / 1000:.2f} ({result['status']})")
         for card in result["checks"]["cards"]:
             if card["surplus"]:

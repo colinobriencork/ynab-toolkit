@@ -1,9 +1,9 @@
-"""LLM-assisted transaction categorizer using the claude CLI."""
+"""LLM-assisted transaction categorization, independent of the model provider."""
 
-import os
 import re
-import subprocess
 from datetime import datetime
+
+from .backends import ClaudeBackend, LLMBackend, create_backend
 
 # How many days either side of a transaction count as "around the same time" —
 # the window the second pass uses to spot incidentals (e.g. a meal next to a
@@ -130,6 +130,7 @@ def build_guess_prompt(
     transaction: dict,
     categories: list[dict],
     past_transactions: list[dict],
+    *, research: bool = True,
 ) -> str:
     """The second-pass prompt: richer context + research, with a decline path.
 
@@ -162,10 +163,19 @@ def build_guess_prompt(
     else:
         nearby_block = ""
 
+    research_instruction = (
+        "If the payee is unfamiliar, abbreviated, or opaque, use web search and fetch "
+        "pages to identify the public merchant and what it sells. Search only merchant "
+        "names, never private amounts, dates, account names, or memos."
+        if research else
+        "Web research is unavailable. Use only the supplied evidence; do not claim "
+        "to have searched or verified a merchant online."
+    )
+
     return f"""{context}{when_block}{nearby_block}This transaction could not be confidently categorized on the first pass. Make your single best determination — do NOT ask the user a question.
 
 Really dig into what this charge is, using whatever signals fit:
-- If the payee is unfamiliar, abbreviated, or opaque (a processor prefix like "SQ *" / "TST*", an unknown subscription, a name you don't recognize), use web search and fetch pages to identify the actual merchant (the real business) and what it sells.
+- {research_instruction}
 - Weigh the surrounding charges and the day of week. A charge that sits alongside related ones often takes its meaning from them — e.g. a smaller charge next to a much larger one on the same trip is more likely an incidental (a meal or activity) than a repeat of the big-ticket item.
 - Use the amount as a signal (e.g. a small Uber charge is likely a meal; a larger one a ride).
 - Lean on the transaction history and any item details above — that is the user's own data.
@@ -200,32 +210,9 @@ def _run_claude(
     allowed_tools: list[str] | None = None,
     timeout: int = DEFAULT_TIMEOUT,
 ) -> str:
-    """Call the claude CLI with --print flag and return the response text.
-
-    When allowed_tools is given, those tools are pre-approved so the CLI can run
-    agentically (search the web, fetch pages) before producing its final answer.
-    """
-    cmd = ["claude", "--print", "--model", model, "--tools", ",".join(allowed_tools or [])]
-    if allowed_tools:
-        cmd += ["--allowedTools", *allowed_tools]
-
-    # Feed the prompt over stdin, never as a trailing arg: --allowedTools is a
-    # variadic flag and would otherwise swallow the prompt as a tool name, leaving
-    # the CLI to hang waiting on stdin until the timeout fires.
-    sensitive = {"YNAB_API_TOKEN", "AMAZON_PASSWORD", "AMAZON_USERNAME",
-                 "AMAZON_OTP_SECRET_KEY", "GMAIL_APP_PASSWORD"}
-    env = {key: value for key, value in os.environ.items() if key not in sensitive}
-    result = subprocess.run(
-        cmd,
-        input=prompt,
-        capture_output=True,
-        text=True,
-        timeout=timeout,
-        env=env,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"claude CLI failed: {result.stderr}")
-    return result.stdout.strip()
+    """Compatibility wrapper for the original Claude runner."""
+    return ClaudeBackend().generate(prompt, model=model, timeout=timeout,
+                                    second_pass=bool(allowed_tools))
 
 
 def _normalize(s: str) -> str:
@@ -258,20 +245,22 @@ def resolve_category(name: str, categories: list[dict]) -> dict | None:
 
 
 class Categorizer:
-    def __init__(self, run_llm=None, guess_llm=None, *, model=DEFAULT_MODEL,
-                 guess_model=GUESS_MODEL, timeout=DEFAULT_TIMEOUT,
-                 guess_timeout=GUESS_TIMEOUT):
+    def __init__(self, run_llm=None, guess_llm=None, *, backend: str | LLMBackend = "claude",
+                 backend_command=None, guess_backend_command=None, model=None,
+                 guess_model=None, timeout=DEFAULT_TIMEOUT, guess_timeout=GUESS_TIMEOUT):
         if timeout <= 0 or guess_timeout <= 0:
             raise ValueError("Model timeouts must be positive")
-        self._run_llm = run_llm or (lambda p: _run_claude(p, model=model, timeout=timeout))
+        provider = (create_backend(backend, command=backend_command,
+                                   guess_command=guess_backend_command)
+                    if isinstance(backend, str) else backend)
+        self._supports_research = provider.supports_research
+        model = model or provider.default_model
+        guess_model = guess_model or provider.default_guess_model or model
+        self._run_llm = run_llm or (
+            lambda p: provider.generate(p, model=model, timeout=timeout))
         self._guess_llm = guess_llm or (
-            lambda p: _run_claude(
-                p,
-                model=guess_model,
-                allowed_tools=GUESS_TOOLS,
-                timeout=guess_timeout,
-            )
-        )
+            lambda p: provider.generate(p, model=guess_model, timeout=guess_timeout,
+                                        second_pass=True))
 
     def suggest(
         self,
@@ -292,8 +281,9 @@ class Categorizer:
         categories: list[dict],
         past_transactions: list[dict],
     ) -> dict:
-        """Second-pass forced best guess, using the smarter guess_llm (Opus)."""
-        prompt = build_guess_prompt(transaction, categories, past_transactions)
+        """Second-pass review with more context and optional merchant research."""
+        prompt = build_guess_prompt(transaction, categories, past_transactions,
+                                    research=self._supports_research)
         text = self._guess_llm(prompt)
         return parse_llm_response(text)
 

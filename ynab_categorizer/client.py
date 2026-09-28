@@ -101,6 +101,11 @@ class YNABClient:
         resp.raise_for_status()
         return resp.json()["data"]["accounts"]
 
+    def get_scheduled_transactions(self, budget_id: str) -> list[dict]:
+        resp = self._request("GET", f"/budgets/{budget_id}/scheduled_transactions")
+        resp.raise_for_status()
+        return resp.json()["data"]["scheduled_transactions"]
+
     def get_month(self, budget_id: str, month: str = "current") -> dict:
         """A month's detail, including to_be_budgeted (Ready to Assign)."""
         resp = self._request("GET", f"/budgets/{budget_id}/months/{month}")

@@ -1,164 +1,280 @@
 # YNAB Toolkit
 
-A configurable command-line companion for YNAB: categorize transactions, plan category funding from current or expected income, check card payment coverage, and inspect spending.
+Categorize transactions, plan your budget, cover overspending, and review spending from the command line.
 
-**All budget-changing CLI commands preview by default. Use `--apply` to write to YNAB.** Categorization also defaults to preview; this changes the previous automatic-approval behavior.
+## Command guide
 
-## Install and configure
-
-Requires Python 3.13+, PDM, and a YNAB Personal Access Token. Categorization additionally uses an installed, authenticated Claude CLI; budgeting and reports do not need Claude. Playwright Chromium is needed only for optional Amazon enrichment.
-
-```bash
-git clone https://github.com/colinobriencork/ynab-toolkit.git
-cd ynab-toolkit
-pdm install
-cp .env.example .env
-cp config.example.toml config.toml
-pdm run setup
-python -m ynab_categorizer --help
+```text
+ynab-toolkit COMMAND [options]
 ```
 
-Run commands with `pdm run ...` or `pdm run python -m ynab_categorizer ...` so they use the project environment. The direct Python examples below assume that environment is active.
+| Command | What it does |
+| --- | --- |
+| `categorize` | Review categories for unapproved transactions, including ones YNAB categorized automatically. |
+| `assign` | Budget money you already have available. |
+| `phantom-assign` | Plan a month using expected income. |
+| `rebalance` | Move unused money this month to cover overspending. |
+| `spend-watch` | Compare spending with your configured income. |
+| `budget-check` | Check overspending, targets, and credit card funding. |
+| `correct` | Fix one expense's category and matching funding. |
+| `restore` | Reverse supported changes from a saved run journal. |
+| `spending-report` | Analyze spending over a date range. |
+| `setup` | Save your YNAB token and create starter settings. |
+| `amazon-login` | Save an Amazon session for purchase matching. |
 
-Set `YNAB_API_TOKEN` in `.env` or the process environment. Supported process environment values override `.env`, which overrides top-level TOML settings. `config.toml` is optional; `--config /path/to/settings.toml` selects another file. An explicitly selected missing file is an error.
+```bash
+ynab-toolkit --help
+ynab-toolkit rebalance --help
+```
 
-Choose a budget with `--budget "Your Budget Name"` or its ID. Otherwise, set `default_budget` in TOML or use the interactive selector. No personal budget names, IDs, income, or merchant rules are required in source code.
+**Budget changes preview by default. Add `--apply` to make them.** Reports and checks are read-only; `spend-watch --send` explicitly sends email. `setup` saves local settings, and `amazon-login` saves a browser session.
 
-The TOML file supports `[defaults]` and `[budgets."Name or ID"]` overrides. Per-budget dictionaries merge with defaults; arrays replace defaults. If both ID and name entries exist, the name entry takes precedence. Unknown options are rejected to catch misspellings.
+Common options are `--budget "Your Budget Name"`, `--config /path/to/config.toml`, and `--report reports/run.json` where supported. `assign`, `phantom-assign`, and `budget-check` accept `--month YYYY-MM`. Each command's `--help` lists its exact options.
+
+[Setup](#setup) · [When to use each command](#a-practical-budgeting-workflow) · [Detailed rules and configuration](docs/REFERENCE.md)
+
+## Setup
+
+### 1. Install the command
+
+Install [uv](https://docs.astral.sh/uv/getting-started/installation/), then:
+
+```bash
+uv tool install --python 3.13 git+https://github.com/colinobriencork/ynab-toolkit.git
+ynab-toolkit --help
+```
+
+This installs the toolkit and its Python dependencies in an isolated environment and puts `ynab-toolkit` on your PATH. PDM and a source checkout are not needed for everyday use. If uv reports that its executable directory is missing from PATH, run `uv tool update-shell` and open a new terminal. See [uv's tool installation guide](https://docs.astral.sh/uv/guides/tools/#installing-tools).
+
+To update later:
+
+```bash
+uv tool upgrade ynab-toolkit
+```
+
+The command also accepts the spelling `ynab_toolkit`. Python 3.13 or newer is required. AI CLIs and the optional Amazon browser are configured separately below.
+
+### 2. Connect YNAB
+
+Get a Personal Access Token using [YNAB's official instructions](https://api.ynab.com/#personal-access-tokens). In the web app, open Account Settings → Developer Settings, find Personal Access Tokens, and generate a token for your own account. Then run:
+
+```bash
+ynab-toolkit setup
+```
+
+Setup opens [YNAB's Developer Settings](https://app.ynab.com/settings/developer) and asks you to paste the token into a hidden prompt. On first setup, it also asks for an optional default budget name and your AI backend. It saves everything for you; **you do not need to create a credentials file by hand**. On macOS and Linux, an installed copy stores its private settings here:
+
+```text
+~/.config/ynab-toolkit/.env
+~/.config/ynab-toolkit/config.toml
+```
+
+`XDG_CONFIG_HOME` overrides the `.config` directory. Setup prints the exact paths it used. Token files created by setup are readable and writable only by your user on systems with Unix file permissions. Keep your token private; it grants access to your YNAB account.
+
+You can later adjust budgeting preferences in `config.toml`. For example, choosing a budget and Codex during setup produces settings like:
 
 ```toml
-# Invented toy amounts, not a realistic household budget.
-# All configured money amounts are integer YNAB milliunits: 1000 = 1 currency unit.
-default_budget = "Household"
+default_budget = "Your Budget Name"
 
 [defaults]
-priority_groups = ["Essentials", "Savings", "Annual expenses", "Lifestyle"]
-discretionary_group = "Lifestyle"
-wants_mode = "refill"
-model = "haiku"
-guess_model = "opus"
-timeout = 60
-guess_timeout = 180
-
-[budgets."Household"]
-monthly_income = 120000
-warn_ratio = 0.8
-near_limit_ratio = 0.9
-# Explicit dated income replaces automatic biweekly detection. Empty [] means none.
-income_schedule = [{date = "2030-01-15", amount = 60000}, {date = "2030-01-30", amount = 60000}]
-wants_overrides = { "Dining out" = 9000, "Hobbies" = 7000 }
-merchant_rules = { "Known Clothing Shop" = "Essentials: Clothing" }
-group_roles = { Savings = "saving", "Loan payments" = "repayment" }
-
-[savings_pairs]
-Retirement = ["retirement", "pension"]
+backend = "codex"
+spending_target_mode = "refill"
 ```
 
-Use your actual category/group names. Priority matching accepts a parenthetical suffix, such as `Savings (Reserved)`. Including an annual-expense group funds its targets; the default groups are Bills, Needs, Savings, Wants. Default Infrequent targets are excluded, but overspending is covered regardless of group. Income schedules are explicit dates, not repeating schedules: maintain future dates as months change.
+Without `default_budget`, select a budget at the prompt or supply `--budget`. The [full example configuration](config.example.toml) shows optional priorities, protected balances, income schedules, and merchant rules. All monetary settings use **milliunits: 1000 = 1 currency unit**.
 
-## Categorization
+Existing source checkouts continue using their repository's `config.toml` and `.env`. To reuse those settings with an installed command, pass `--config /path/to/your/config.toml`, or set `YNAB_TOOLKIT_CONFIG` to that path in your shell. The `.env` beside that file supplies its credentials; the toolkit does not combine credentials from different settings folders. Process environment variables take precedence over `.env`, then TOML. An explicitly selected missing settings file is an error, except that `setup` can create it.
+
+### 3. Choose an AI backend for categorization
+
+Only `categorize` needs AI. Budget planning, rebalancing, corrections, checks, and spending reports work without it.
+
+| Backend | Install and sign in | Toolkit setting |
+| --- | --- | --- |
+| Codex | Follow [OpenAI's Codex CLI setup](https://learn.chatgpt.com/docs/codex/cli), then run `codex login`. | `backend = "codex"` |
+| Claude Code | Follow [Anthropic's setup instructions](https://code.claude.com/docs/en/setup), then run `claude` and complete sign-in. | `backend = "claude"` |
+| Another CLI or local model | Provide a trusted command that reads a prompt from stdin and writes its answer to stdout. See [custom backends](docs/REFERENCE.md#choosing-a-model-backend). | `backend = "command"` |
+
+Choose the backend during `setup`, or change `backend` under `[defaults]` in `config.toml` later. The toolkit reuses the CLI's existing authentication; you do not paste that provider's token into the toolkit. A Codex login with access does not require a separate OpenAI API key. This adapter was verified with Codex CLI 0.153.4 and requires `exec --ignore-user-config` and `--ephemeral`.
+
+Try a preview:
 
 ```bash
-pdm run categorize --budget "Household"
-pdm run categorize --budget "Household" --apply
-pdm run categorize --report reports/categorize-preview.json
+ynab-toolkit categorize --backend codex
 ```
 
-Exact, case-insensitive merchant rules run first. Otherwise, a first-pass model uses transaction details and approved merchant history. Uncertain cases go to a second model with nearby transaction context and web tools. A transaction cannot serve as its own historical evidence. Group-qualified names and category IDs are supported; ambiguous names are rejected.
+The toolkit sends transaction and merchant details to your chosen AI provider, including during previews. It can also research merchants in a second pass. There is no automatic switch to a different provider. Model defaults, permissions, and custom command requirements are explained in the [backend reference](docs/REFERENCE.md#choosing-a-model-backend).
 
-Transfers, splits, bare person-to-person transfers without a configured rule, and unresolved transactions are left for review. Confirmed model/rule decisions are approved when applied. Individual failures are recorded and the run continues; failed or unverifiable runs return a nonzero exit code. No interactive classification questions interrupt the run.
+### 4. Optional: connect Amazon
 
-The first model has no built-in tools; the second is limited to WebSearch/WebFetch. Budget and merchant details are sent to Claude, and research may send merchant information to web services. YNAB, Amazon, and email credentials are removed from the subprocess environment. Tool restrictions are not an OS sandbox; your installed Claude configuration remains relevant.
-
-### Optional Amazon enrichment
+Amazon enrichment helps distinguish purchases that all appear as the same Amazon payee. Skip this if you do not need order matching.
 
 ```bash
-pdm run playwright install chromium
-pdm run amazon-login
+ynab-toolkit amazon-login --install-browser
 ```
 
-Configure `AMAZON_USERNAME`, `AMAZON_PASSWORD`, `AMAZON_OTP_SECRET_KEY`, `AMAZON_DOMAIN`, and **`AMAZON_BUDGET_NAME`** in `.env`. Enrichment requires an explicit matching budget name so one person's orders are not used for another budget. `AMAZON_OTP_SECRET_KEY` is the authenticator's base32 secret, not a six-digit code.
+On first use, this asks for your Amazon login, password, authenticator secret, Amazon domain, and matching YNAB budget name. The password and secret prompts are hidden, and the answers are saved privately for later runs. The current adapter requires all three login fields. The OTP secret is the authenticator setup secret, **not** a temporary six-digit code. Use `--configure` to enter new details later.
 
-The browser profile is stored at `~/.config/ynab-categorizer/amazon-profile`. Expired sessions can open a login browser; a CAPTCHA or passkey challenge may require interaction. Parsing currently assumes English order dates and dollar-formatted Amazon totals; other marketplace formats are not supported automatically.
+The command then installs the matching [Playwright Chromium browser](https://playwright.dev/python/docs/browsers), opens Amazon, and saves the signed-in session. Complete any interactive challenge in the window. Later, `ynab-toolkit amazon-login` reuses the installed browser. Run with `--install-browser` again if an update requires a newer browser version.
 
-## Budget assignment and verification
+The browser profile stays at `~/.config/ynab-categorizer/amazon-profile` for compatibility. Order matching is enabled only for the explicitly named budget. Amazon parsing currently assumes English order dates and dollar-formatted totals.
+
+#### Finding the authenticator setup key
+
+There are three different pieces of information:
+
+| Item | What to enter |
+| --- | --- |
+| Amazon password | Your normal password, without a code appended. |
+| Authenticator setup key | The long, reusable secret behind the QR code. Paste this at the toolkit's secret prompt. |
+| One-time code | The short changing number generated from that secret. Use it to verify enrollment on Amazon, not as the toolkit's saved secret. |
+
+1. In your Amazon account, open **Login & security**, then the **Two-Step Verification** settings.
+2. Add an **Authenticator App**. If two-step verification is already enabled, use the option to add another authenticator. Keep your working recovery method.
+3. At the enrollment QR code, look for the manual-entry option, often labeled **Can't scan the barcode?** Copy the long setup key it reveals. Labels can vary by Amazon site. [Amazon's enrollment instructions](https://kdp.amazon.com/en_US/help/topic/G6HTFZJLJ7AJQ56R) and [manual-entry walkthrough](https://m.media-amazon.com/images/G/01/AGS/SEA/2SV_Guide_ASVN._CB1535016505_.pdf).
+4. Add that same key or QR code to your authenticator app. Enter its current one-time code on Amazon to finish enrollment; copying the key alone does not finish setup.
+5. Run `ynab-toolkit amazon-login --install-browser` and paste the setup key when asked. Spaces in the key are accepted. A short one-time code is rejected with an explanation.
+
+If you already have an authenticator but did not retain its setup key, use its supported secret/export feature if available, or enroll another authenticator through Amazon. A displayed six-digit code cannot recover the original key. Keep the key private: it can generate future login codes.
+
+The "number on the end of the password" is Amazon's alternate sign-in method. The toolkit generates and appends that temporary code automatically, and can fill a separate code field when shown. **Do not save your password with today's code appended.** [Amazon's explanation](https://digprjsurvey.amazon.co.uk/csad/help/node/201962400).
+
+### 5. Check the connection
 
 ```bash
-pdm run assign --budget "Household"
-pdm run phantom-assign --budget "Household"
-pdm run phantom-assign --budget "Household" --apply
-pdm run budget-check --budget "Household"
+ynab-toolkit budget-check
 ```
 
-`assign` spends only positive Ready to Assign. It funds carried-over card debt, current overspending, then targets in configured priority order. Nonpositive RTA is reported as unavailable cash, not as proof that all categories are funded.
+This reads your budget and reports its condition without changing it. An overspending or card-funding warning means there is something to review, not necessarily that setup failed.
 
-`phantom-assign` uses RTA plus expected income to lay out the month. It funds carried-over card debt, current overspending, and committed targets in full, then distributes the remainder across the discretionary group. **Commitments can exceed expected income:** the report identifies that uncovered amount. Negative RTA is expected when the plan depends on future income; category balances are not proof that the cash has already arrived.
+## A practical budgeting workflow
 
-Without an explicit income schedule, the planner detects recent biweekly payroll. It rejects stale patterns after a missed expected payday and reduces the influence of an unusually large latest payment. This is a heuristic, not a guarantee; use explicit dated income for monthly, irregular, or changing pay.
+Use the commands in this order as needed. **Every amount, merchant, and scenario below is invented.** Examples describe the results to expect, not literal terminal output. Dates are placeholders to replace with the month you are reviewing.
 
-Discretionary allowances use recent average spending unless overridden. `wants_mode = "refill"` counts carryover funding; `"accumulate"` adds this month's allowance independently of carryover. Ordinary targets skip hidden categories, while negative hidden spending balances are included in overspending coverage and checks. Proportional allocations respect the budget's currency decimal precision (optional `currency_decimal_digits` override, 0–3).
-
-Both commands share an application workflow:
-
-1. Fetch a budget snapshot and calculate additions.
-2. Check that the snapshot and affected assignments have not changed before writing.
-3. Apply assignments, journaling each operation.
-4. Fetch fresh card balances after YNAB moves money from spending categories.
-5. Transfer surplus payment funding to underfunded cards, releasing the donor assignment first.
-6. Read back actual assignments, RTA, remaining overspending, and card differences.
-
-Card transfers do not send bank payments. A preview lists current-state possible transfers; the exact transfers are recalculated after funding. Changes are separate API requests, not an atomic transaction. A concurrent edit or failure stops further budgeting writes and returns a nonzero exit status. Run `budget-check` before retrying.
-
-`budget-check` is read-only and reports RTA, expected income coverage, underfunded targets, overspending, and each card's surplus/shortfall. It returns nonzero for uncovered forecasts, overspending, or underfunded cards. Targets alone may remain underfunded intentionally. Use `--report PATH` for JSON.
-
-## Correct historical categorization
+### When transactions arrive: categorize, then check
 
 ```bash
-pdm run correct --budget "Household" --transaction TRANSACTION_ID --category "Essentials: Clothing"
-pdm run correct --budget "Household" --transaction TRANSACTION_ID --category "Essentials: Clothing" --apply
+ynab-toolkit categorize --report reports/categories-preview.json
+ynab-toolkit categorize --apply --report reports/categories-applied.json
+ynab-toolkit budget-check
 ```
 
-For a single unsplit expense, this moves the transaction and the matching assignment from the original category to the destination in the transaction's month. It preserves approval state, checks available balances and RTA, then reconciles current card funding displaced by historical edits. Refunds, transfers, and splits require manual handling. The command refuses stale transaction data or ambiguous categories.
+Review the preview before applying. Categorization checks **unapproved on-budget transactions**, including ones YNAB already categorized. Applying a confirmed choice also approves it. Already-approved transactions are left alone. Transfers, tracking-account entries, splits, and unresolved cases are left for manual review.
 
-## Run journals and recovery
+For example, an unapproved 8-unit purchase at Fictional Stationery Store may have been guessed as Groceries. A configured merchant rule or the AI can propose Hobbies instead. Applying changes its category and approves it; a later categorization run skips it.
 
-Applied runs automatically write private JSON journals to `$XDG_STATE_HOME/ynab-categorizer/runs` (default `~/.local/state/ynab-categorizer/runs`). `--report PATH` chooses a different location or saves a preview. Journals record identifiers, previous/proposed values, completed writes, and failures. They contain private financial information; they are not source files.
+If a merchant always belongs in one category, add a rule under its budget in `config.toml`:
+
+```toml
+[budgets."Your Budget Name"]
+merchant_rules = { "Fictional Stationery Store" = "Wants: Hobbies" }
+```
+
+### When a card shortfall looks surprising: investigate before funding it
 
 ```bash
-pdm run restore /path/to/run.json
-pdm run restore /path/to/run.json --apply
+ynab-toolkit budget-check --report reports/health.json
+ynab-toolkit spending-report --start 2030-01-01 --end 2030-01-31 --report reports/spending.json
 ```
 
-Restore reverses completed operations only when current values still match what the run wrote. It refuses to overwrite later edits. Uncertain writes—such as a lost response after a request—require inspection before restoration. Keep journals intact. Restoration also consists of separate API calls and is itself journaled.
+`budget-check` shows how much is owed on each card and how much is available in its payment category. `spending-report` shows category outflows, inflows, net spending, and review flags. The JSON also identifies merchants appearing in multiple categories and transaction IDs for flagged items. Use those clues to inspect the relevant transactions in YNAB; this command is not a complete transaction-ledger export or automatic explanation of every card gap.
 
-## Spending reports and email
+For example, a work expense of 80 followed by a reimbursement of 20 leaves 60 uncovered. An unrelated reimbursement received and passed on to somebody else is not additional money for that expense. The report shows recorded category inflows; it does not guess which future claims will be paid. Check the underlying transactions before treating a shortfall as reimbursable.
+
+A current-month credit purchase shortfall is generally covered in its spending category, allowing YNAB to move funding to the card. Older debt carried into a later month needs card-payment funding. The planners distinguish these so the same gap is not funded twice.
+
+### After payday: assign money that has arrived
 
 ```bash
-pdm run spending-report --budget "Household" --start 2026-07-01 --end 2026-09-30 --report reports/spending.json
-pdm run spend-watch --budget "Household"
-pdm run spend-watch --send
+ynab-toolkit assign --report reports/assign-preview.json
+ynab-toolkit assign --apply --report reports/assign-applied.json
+ynab-toolkit budget-check
 ```
 
-Spending reports show category outflows, inflows, and net spending; income; and configured saving/repayment roles. Uncategorised account transfers are excluded, while categorized transfers to tracking accounts follow their category role. Split transactions are counted by their parts. Reports include hidden historical categories and flag unapproved/unknown categories and merchants using multiple categories. Flags are prompts to review, not proof of an error. Refunds and reimbursements are shown together as category inflows rather than guessed from payee names.
+`assign` uses positive Ready to Assign, funds carried-over card debt and overspending, then follows your category priorities and targets. It does not forecast a paycheck to make today's allocation fit.
 
-`spend-watch` compares spending with each configured budget's `monthly_income` and thresholds. Optional `savings_pairs` maps comparison labels to category-name keywords. No savings comparisons run unless you configure this table; an empty table also disables them. Existing `MONTHLY_INCOME_<FIRST_WORD>` environment values remain supported in currency units; explicit per-budget `monthly_income` avoids first-word collisions and uses milliunits.
+For example, with 90 available and a 20 card gap, funding that gap leaves up to 70 for the remaining priorities. If money runs out, the remaining needs stay visible. The default priority groups are Bills, Needs, Savings, and Wants; customize them to match your own budget.
 
-Email uses Gmail SMTP. Set `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, and optional `SPEND_WATCH_RECIPIENTS`; email is sent only with `--send`. Reports reflect YNAB's recorded balances and categories, not independently reconciled bank statements. The CLI currently uses English labels and dollar-style displays; amounts belong to the selected budget's currency and are never converted.
+### Near month-end: rebalance unused money
 
-## Development and publishing
+First make sure recent transactions have imported and consider expenses still due. Then:
 
 ```bash
-pdm run test
-pdm run export-public /tmp/ynab-public
-pdm run prepare-release /tmp/ynab-release-0.1.1
+ynab-toolkit rebalance --report reports/rebalance-preview.json
+ynab-toolkit rebalance --apply --report reports/rebalance-applied.json
+ynab-toolkit budget-check
 ```
 
-Tests use fake clients, HTTP mocks, and simulated failures; no live budgets, emails, model requests, or bank payments are needed. GitHub Actions runs the test suite on Python 3.13 and 3.14.
+For example, Hobbies has 12 available and Dining is 9 overspent. If Hobbies is an eligible donor, rebalancing moves 9 to Dining and leaves 3 in Hobbies. The report lists **what moved from where to where**, the balances kept and why, any remaining shortfalls, and how reduced carryover changes next month's target funding.
 
-`export-public` creates a new source-only directory using an explicit file allowlist: application, tests, public examples, build files, and CI. It omits `.env`, `config.toml`, browser profiles, run journals, personal reports, local Claude settings, standalone personal analysis scripts, and `.git` history. New source files must be added to the reviewed manifest explicitly. File selection does not anonymize file contents; see [PRIVACY.md](PRIVACY.md) before publishing. Your original local files remain intact. If your development checkout contains private financial data in its history, start a fresh Git repository in the exported directory when publishing.
+Savings, accumulating reserves, longer-term targets, card-payment money, and categories with outstanding scheduled expenses are protected. You can add protections or minimum balances:
 
-`prepare-release` exports source to a new directory, runs the tests there, and creates a source ZIP, SHA-256 checksum, and validation manifest. It does not exercise live YNAB writes.
+```toml
+[budgets."Your Budget Name"]
+rebalance_protected_categories = ["Bills: Upcoming service"]
+rebalance_keep = { "Needs: Transport" = 5000 }
+rebalance_last_categories = ["Needs: Reimbursements"]
+```
 
-No GitHub repository is created or pushed by these commands. Legacy personal scripts in the development checkout are not part of the public application; use the configurable `spending-report` and `correct` commands instead.
+Here, Transport keeps at least 5 units. A reimbursement category is considered last within its cash/credit priority tier. These settings must name real categories in your budget; they do not create categories.
 
-Licensed under MIT; see [LICENSE](LICENSE).
+Rebalancing covers cash overspending first, then credit overspending. It preserves Ready to Assign and only moves what is needed. It operates on the **current month only** and refuses negative Ready to Assign. It also records a local hold so `assign` does not immediately refill the categories you just released. Next month has no such hold. See [the rebalance rules](docs/REFERENCE.md#rebalance-unused-month-end-funding) for exceptions and recovery.
+
+### Before next month: preview a plan using expected income
+
+```bash
+ynab-toolkit phantom-assign --month 2030-02 --report reports/next-month-preview.json
+```
+
+This combines Ready to Assign with expected income for the selected month. It covers card debt, overspending, and committed targets, then distributes the remainder within your discretionary group. Without an explicit income schedule, it looks for recent biweekly payroll; configure dated income if your pay is irregular or follows another cadence.
+
+Existing funding counts toward ordinary monthly and weekly spending targets. For example, an 80-unit target with 25 carried forward needs **55 newly assigned**. Money already spent against that month's allowance still counts, preventing repeated refills. Savings contributions and accumulating reserves can intentionally need another contribution. These are toolkit calculations; YNAB's target definitions are not edited.
+
+For a toy forecast with 120 total resources, 60 of committed needs and 20 of card debt leave 40 for discretionary allocations. That arithmetic can be correct while the plan is incomplete: a necessary category without a target or outside the priority groups may still need an allowance.
+
+**The current discretionary planner uses positive targets where present, otherwise recent spending averages, and proportionally fits those amounts into the remaining money.** It can partially fund targets. The resulting remainder is not proof that every essential expense has been covered. Review missing targets, subscription changes, reimbursements, and bill timing before treating it as freely spendable.
+
+Keep this as a preview while reviewing. Adding `--apply` writes the forecast's assignments now and can make Ready to Assign negative until the expected income arrives. Monthly totals do not prove that a paycheck arrives before an early-month bill. Use `assign` after income arrives if you want to allocate only existing money.
+
+### Periodically: review spending against income
+
+```bash
+ynab-toolkit spend-watch
+```
+
+Configure `monthly_income`, `warn_ratio`, and `near_limit_ratio` for each budget first. For example, 45 spent against a configured income of 100 is 45%. This is a quick pacing check; use `spending-report` for category detail.
+
+Optional email requires `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, and optionally `SPEND_WATCH_RECIPIENTS` in your private `.env`. Only `ynab-toolkit spend-watch --send` sends it. See [reporting and email](docs/REFERENCE.md#spending-reports-and-email).
+
+### When you find an older mistake: correct or restore
+
+To fix one unsplit expense, use its transaction ID and an unambiguous category name:
+
+```bash
+ynab-toolkit correct --transaction TRANSACTION_ID --category "Needs: Clothing"
+ynab-toolkit correct --transaction TRANSACTION_ID --category "Needs: Clothing" --apply
+```
+
+For example, correcting a 6-unit expense from Hobbies to Clothing also moves its matching assignment in the transaction's month, subject to balance checks. Approval status is preserved. This is useful for an already-approved expense that `categorize` intentionally skips. Refunds, splits, and transfers require manual handling.
+
+Applied budget changes save a private journal automatically. To reverse supported completed changes from a particular run:
+
+```bash
+ynab-toolkit restore reports/assign-applied.json
+ynab-toolkit restore reports/assign-applied.json --apply
+```
+
+Restore checks that the current values still match the run's writes; it refuses to overwrite later edits. It is not a universal undo for all subsequent YNAB activity. If a run stops partway through, inspect its journal and run `budget-check` before retrying. Operations use separate API requests, not an atomic transaction. See [journals and recovery](docs/REFERENCE.md#run-journals-and-recovery).
+
+## More detail and development
+
+- [Detailed behavior and configuration](docs/REFERENCE.md): target calculations, income assumptions, AI permissions, protections, verification, and recovery.
+- [Example settings](config.example.toml) and [secret variable names](.env.example).
+- [Privacy and publishing](PRIVACY.md): source exports exclude credentials, personal records, and Git history; contents still need review.
+- [Changelog](CHANGELOG.md).
+
+For development, clone the repository and use `pdm install -G test` and `pdm run test`. `pdm run ynab-toolkit ...`, `python -m ynab_toolkit ...` in the project environment, and the old `python -m ynab_categorizer ...` entry point remain supported. To install a local checkout as a command, run `uv tool install .`; use `uv tool install --editable .` if you want source edits reflected immediately. The Python integration package and existing journal/browser-profile directories retain their original names.
+
+Reports describe the transactions recorded in YNAB, not independently reconciled bank statements. CLI amounts use the budget's currency with dollar-style displays; no currency conversion is performed. Keep reports and journals private.
+
+Licensed under [MIT](LICENSE).

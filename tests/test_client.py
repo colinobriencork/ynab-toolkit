@@ -170,6 +170,14 @@ def test_get_accounts_returns_accounts(client):
 
 
 @respx.mock
+def test_get_scheduled_transactions(client):
+    respx.get(f"{BASE_URL}/budgets/b1/scheduled_transactions").mock(
+        return_value=httpx.Response(200, json={'data': {'scheduled_transactions': [
+            {'id': 's1', 'date_next': '2015-09-30', 'amount': -3_000}]}}))
+    assert client.get_scheduled_transactions('b1')[0]['id'] == 's1'
+
+
+@respx.mock
 def test_client_raises_on_http_error(client):
     respx.get(f"{BASE_URL}/budgets").mock(
         return_value=httpx.Response(401, json={"error": {"detail": "Unauthorized"}})

@@ -11,6 +11,7 @@ import pytest
 from unittest.mock import MagicMock
 
 from ynab_categorizer.orchestrator import Orchestrator
+from ynab_categorizer.backends import BackendError
 
 
 @pytest.fixture(autouse=True)
@@ -27,8 +28,10 @@ def _make_orchestrator(
     client.get_categories.return_value = categories or [
         {"id": "c1", "name": "Dining Out", "group_name": "Lifestyle"},
     ]
-    client.get_transactions.return_value = past or []
-    client.get_unapproved_transactions.return_value = unapproved
+    for txn in (past or []) + unapproved:
+        txn.setdefault('account_id', 'checking')
+    client.get_accounts.return_value = [{'id': 'checking', 'on_budget': True}]
+    client.get_transactions.return_value = list({t['id']: t for t in (past or []) + unapproved}.values())
     state = {t["id"]: dict(t) for t in unapproved}
     client.get_transaction.side_effect = lambda budget, txn_id: dict(state[txn_id])
     def update(budget, txn_id, **fields):
@@ -569,3 +572,60 @@ def test_amazon_requires_explicit_budget_binding(capsys):
     enricher.enrich.assert_not_called()
     enricher.candidates.assert_not_called()
     assert "Amazon enrichment disabled" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize('second_pass', [False, True])
+def test_backend_failure_never_writes_and_preserves_safe_diagnostic(second_pass):
+    txn = {"id": "t1", "payee_name": "Example Shop", "amount": -1000, "date": "2014-03-10"}
+    orch, client, cat = _make_orchestrator([txn])
+    error = BackendError("codex executable not found; install it or select another backend")
+    if second_pass:
+        cat.suggest.return_value = {"action": "ask", "question": "What was purchased?"}
+        cat.guess.side_effect = error
+    else:
+        cat.suggest.side_effect = error
+    report = orch.run()
+    client.update_transaction.assert_not_called()
+    assert report['status'] == 'incomplete'
+    assert 'codex executable not found' in json.dumps(report['results'])
+
+
+@pytest.mark.parametrize('category', [None, 'user-choice'])
+def test_approved_transaction_is_preserved_without_model_or_write(category):
+    txn = {'id': 't1', 'payee_name': 'Example Shop', 'amount': -1000,
+           'date': '2014-03-10', 'category_id': category, 'approved': True}
+    orch, client, cat = _make_orchestrator([txn])
+    orch.merchant_rules = {'example shop': 'c1'}
+    report = orch.run()
+    cat.suggest.assert_not_called()
+    cat.guess.assert_not_called()
+    client.update_transaction.assert_not_called()
+    assert report['operations'] == []
+
+
+@pytest.mark.parametrize('category', [None, 'imported-choice'])
+def test_unapproved_transaction_is_reviewed_even_if_already_categorized(category):
+    txn = {'id': 't1', 'payee_name': 'Example Shop', 'amount': -1000,
+           'date': '2014-03-10', 'category_id': category, 'approved': False}
+    orch, client, cat = _make_orchestrator([txn])
+    cat.suggest.return_value = {'action': 'categorize', 'category_name': 'Dining Out'}
+    report = orch.run()
+    client.update_transaction.assert_called_once_with('b1', 't1', category_id='c1', approved=True)
+    client.get_unapproved_transactions.assert_not_called()
+    assert report['operations'][0]['before']['category_id'] == category
+    assert report['operations'][0]['verification'] == 'passed'
+
+
+def test_tracking_transfers_deleted_and_unknown_accounts_are_excluded():
+    base = {'payee_name': 'Example Shop', 'amount': -1000, 'date': '2014-03-10'}
+    txns = [dict(base, id='tracking', account_id='loan'),
+            dict(base, id='unknown', account_id='unknown'),
+            dict(base, id='transfer', transfer_account_id='other'),
+            dict(base, id='deleted', deleted=True)]
+    orch, client, cat = _make_orchestrator(txns)
+    client.get_accounts.return_value.append({'id': 'loan', 'on_budget': False})
+    report = orch.run()
+    cat.suggest.assert_not_called()
+    cat.guess.assert_not_called()
+    client.update_transaction.assert_not_called()
+    assert report['operations'] == []

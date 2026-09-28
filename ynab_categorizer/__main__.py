@@ -1,8 +1,9 @@
-"""Command line entrypoint for YNAB Categorizer."""
+"""Shared command line implementation for YNAB Toolkit and its legacy entrypoint."""
 from __future__ import annotations
 
 import argparse
 import os
+import subprocess
 import sys
 from datetime import date
 from pathlib import Path
@@ -13,54 +14,85 @@ from .client import YNABClient
 from .categorizer import Categorizer
 from .config import budget_options, load_config
 from .orchestrator import Orchestrator, select_budget
-from .setup import setup_token
+from .setup import setup_token, configure_amazon
 from .spendwatch import spend_watch
+from .rebalance import rebalance
 
 AMAZON_KEYS = ("AMAZON_USERNAME", "AMAZON_PASSWORD", "AMAZON_OTP_SECRET_KEY")
 COMMANDS = {"categorize", "assign", "phantom-assign", "spend-watch",
             "budget-check", "correct", "restore", "spending-report",
-            "setup", "amazon-login"}
+            "setup", "amazon-login", "rebalance"}
+
+
+def _budget_month(value):
+    try:
+        month = date.fromisoformat(value + "-01")
+        if month.strftime("%Y-%m") != value:
+            raise ValueError
+        return month.isoformat()
+    except ValueError:
+        raise argparse.ArgumentTypeError("month must be YYYY-MM") from None
 
 
 def _parser():
-    p = argparse.ArgumentParser(prog="ynab-categorizer")
-    p.add_argument("--config", type=Path, help="TOML configuration file")
+    p = argparse.ArgumentParser(
+        prog="ynab-toolkit",
+        description="Categorize transactions, plan your budget, cover overspending, and review spending.",
+        epilog="Use ynab-toolkit COMMAND --help for command options. Budget changes preview by default; add --apply to save them to YNAB.",
+    )
+    p.add_argument("--config", type=Path, help="settings file (reads .env beside it)")
     sub = p.add_subparsers(dest="command")
 
     def command(name, help_text, apply=False):
-        child = sub.add_parser(name, help=help_text)
+        child = sub.add_parser(name, help=help_text, description=help_text)
         child.add_argument("--budget", help="Budget ID or exact budget name")
         if apply:
             child.add_argument("--apply", action="store_true",
                                help="write changes (default is preview)")
         return child
 
-    cat = command("categorize", "categorize unapproved transactions")
+    cat = command("categorize", "review categories for unapproved transactions")
     mode = cat.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="preview without approving")
     mode.add_argument("--apply", action="store_true", help="approve categorized transactions")
     cat.add_argument("--report", type=Path, help="write a JSON run report")
-    assign = command("assign", "assign Ready-to-Assign money", apply=True)
+    cat.add_argument("--backend", choices=("claude", "codex", "command"),
+                     help="model backend (overrides configuration)")
+    cat.add_argument("--model", help="first-pass model for the selected backend")
+    cat.add_argument("--guess-model", help="second-pass model for the selected backend")
+    assign = command("assign", "budget money you already have available", apply=True)
     assign.add_argument("--report", type=Path)
-    phantom = command("phantom-assign", "forward-plan expected income", apply=True)
+    phantom = command("phantom-assign", "plan a month using expected income", apply=True)
     phantom.add_argument("--report", type=Path)
-    watch = command("spend-watch", "report spending against configured income")
+    sweep = command("rebalance", "move unused money this month to cover overspending", apply=True)
+    sweep.add_argument("--report", type=Path)
+    for planner in (assign, phantom):
+        planner.add_argument("--refill-rebalanced", action="store_true",
+                             help="allow funding categories released by rebalance this month")
+    watch = command("spend-watch", "compare spending with your configured income")
     watch.add_argument("--send", action="store_true", help="email the report")
-    check = command("budget-check", "run budget health checks")
+    check = command("budget-check", "check overspending, targets, and card funding")
     check.add_argument("--report", type=Path)
-    correct = command("correct", "correct one transaction", apply=True)
+    for planner in (assign, phantom, check):
+        planner.add_argument("--month", type=_budget_month, metavar="YYYY-MM",
+                             help="budget month (default: current month)")
+    correct = command("correct", "fix one expense's category and matching funding", apply=True)
     correct.add_argument("--transaction", required=True)
     correct.add_argument("--category", required=True)
     correct.add_argument("--report", type=Path)
-    restore = command("restore", "restore a run journal", apply=True)
+    restore = command("restore", "reverse supported changes from a saved run journal", apply=True)
     restore.add_argument("path", type=Path)
     restore.add_argument("--report", type=Path)
-    report = command("spending-report", "report spending for a date range")
+    report = command("spending-report", "analyze spending over a date range")
     report.add_argument("--start", required=True)
     report.add_argument("--end", required=True)
     report.add_argument("--report", type=Path)
-    command("setup", "set up the YNAB token")
-    command("amazon-login", "log in to Amazon")
+    command("setup", "save your YNAB token and create starter settings")
+    amazon = command("amazon-login", "save an Amazon session for purchase matching")
+    amazon.add_argument("--install-browser", action="store_true",
+                        help="install this toolkit's Playwright Chromium before signing in")
+    amazon.add_argument("--configure", action="store_true",
+                        help="prompt for Amazon credentials and the matching budget again")
     return p
 
 
@@ -100,7 +132,7 @@ def _build_enricher(config: dict) -> AmazonEnricher | None:
 
 def _client_or_exit(config: dict) -> YNABClient:
     if not config.get("YNAB_API_TOKEN"):
-        raise SystemExit("Missing YNAB token. Run: pdm run setup")
+        raise SystemExit("Missing YNAB token. Run: ynab-toolkit setup")
     return YNABClient(config["YNAB_API_TOKEN"])
 
 
@@ -117,14 +149,21 @@ def _status_code(result):
 
 def main(argv=None):
     args = parse_args(argv)
-    config = load_config(args.config)
     if args.command == "setup":
-        setup_token()
+        setup_token(args.config)
         return
+    config = load_config(args.config)
     if args.command == "amazon-login":
         from .amazon import interactive_login
+        if args.configure or not all(config.get(key) for key in (*AMAZON_KEYS, "AMAZON_BUDGET_NAME")):
+            configure_amazon(args.config, config)
+            config = load_config(args.config)
         if not _export_amazon_env(config):
             raise SystemExit("Missing Amazon credentials in configuration")
+        if args.install_browser:
+            result = subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"])
+            if result.returncode:
+                raise SystemExit(result.returncode)
         raise SystemExit(0 if interactive_login() else 1)
 
     client = _client_or_exit(config)
@@ -136,9 +175,16 @@ def main(argv=None):
 
 def _dispatch(client, args, config):
     if args.command in {"assign", "phantom-assign", "budget-check", "correct",
-                        "spending-report"}:
+                        "spending-report", "rebalance"}:
         budget = _pick_budget(client, getattr(args, "budget", None) or config.get("default_budget"))
         options = budget_options(config, budget)
+        if getattr(args, "month", None):
+            options["month"] = args.month
+        if getattr(args, "refill_rebalanced", False):
+            options["refill_rebalanced"] = True
+        if args.command == "rebalance":
+            options["report_path"] = args.report or options.get("report_path")
+            return _status_code(rebalance(client, budget["id"], apply=args.apply, options=options))
         if args.command == "assign":
             options["report_path"] = args.report or options.get("report_path")
             return _status_code(assign_funds(client, budget["id"], apply=args.apply,
@@ -177,9 +223,21 @@ def _dispatch(client, args, config):
 
     budget = _pick_budget(client, args.budget or configured_budget)
     options = budget_options(config, budget)
+    # Switching provider on the command line must not reuse another provider's
+    # configured model aliases.
+    if args.backend and args.backend != options.get("backend", "claude"):
+        for key in ("model", "guess_model"):
+            options.pop(key, None)
+    options["backend"] = args.backend or options.get("backend", "claude")
+    for key in ("model", "guess_model"):
+        if getattr(args, key):
+            options[key] = getattr(args, key)
     categorizer = Categorizer(
-        model=options.get("model", "haiku"),
-        guess_model=options.get("guess_model", "opus"),
+        backend=options["backend"],
+        backend_command=options.get("backend_command"),
+        guess_backend_command=options.get("guess_backend_command"),
+        model=options.get("model"),
+        guess_model=options.get("guess_model"),
         timeout=options.get("timeout", 60),
         guess_timeout=options.get("guess_timeout", 180),
     )
