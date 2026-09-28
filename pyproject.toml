@@ -28,7 +28,7 @@ distribution = true
 
 [tool.pdm.build]
 includes = ["ynab_categorizer/*.py", "ynab_toolkit/*.py"]
-source-includes = [".env.example", "config.example.toml", "CHANGELOG.md", "PRIVACY.md", "LICENSE", "docs/REFERENCE.md"]
+source-includes = [".env.example", "config.example.toml", "CHANGELOG.md", "CONTRIBUTING.md", "PRIVACY.md", "LICENSE", "docs/REFERENCE.md"]
 
 [tool.pdm.dev-dependencies]
 test = [

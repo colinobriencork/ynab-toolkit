@@ -31,9 +31,11 @@ ynab-toolkit rebalance --help
 
 Common options are `--budget "Your Budget Name"`, `--config /path/to/config.toml`, and `--report reports/run.json` where supported. `assign`, `phantom-assign`, and `budget-check` accept `--month YYYY-MM`. Each command's `--help` lists its exact options.
 
-[Setup](#setup) · [When to use each command](#a-practical-budgeting-workflow) · [Detailed rules and configuration](docs/REFERENCE.md)
+[Setup](#setup) · [When to use each command](#a-practical-budgeting-workflow) · [Detailed rules and configuration](docs/REFERENCE.md) · [Contributing](CONTRIBUTING.md)
 
 ## Setup
+
+Install the command, connect your YNAB account, and choose the optional integrations you want to use. To change the toolkit's code, see [Contributing](CONTRIBUTING.md).
 
 ### 1. Install the command
 
@@ -44,7 +46,7 @@ uv tool install --python 3.13 git+https://github.com/colinobriencork/ynab-toolki
 ynab-toolkit --help
 ```
 
-This installs the toolkit and its Python dependencies in an isolated environment and puts `ynab-toolkit` on your PATH. PDM and a source checkout are not needed for everyday use. If uv reports that its executable directory is missing from PATH, run `uv tool update-shell` and open a new terminal. See [uv's tool installation guide](https://docs.astral.sh/uv/guides/tools/#installing-tools).
+This installs the toolkit and its Python dependencies in an isolated environment and puts `ynab-toolkit` on your PATH. If uv reports that its executable directory is missing from PATH, run `uv tool update-shell` and open a new terminal. See [uv's tool installation guide](https://docs.astral.sh/uv/guides/tools/#installing-tools).
 
 To update later:
 
@@ -52,7 +54,7 @@ To update later:
 uv tool upgrade ynab-toolkit
 ```
 
-The command also accepts the spelling `ynab_toolkit`. Python 3.13 or newer is required. AI CLIs and the optional Amazon browser are configured separately below.
+Python 3.13 or newer is required; the install command selects that version for you. AI CLIs and the optional Amazon browser are configured separately below.
 
 ### 2. Connect YNAB
 
@@ -69,7 +71,7 @@ Setup opens [YNAB's Developer Settings](https://app.ynab.com/settings/developer)
 ~/.config/ynab-toolkit/config.toml
 ```
 
-`XDG_CONFIG_HOME` overrides the `.config` directory. Setup prints the exact paths it used. Token files created by setup are readable and writable only by your user on systems with Unix file permissions. Keep your token private; it grants access to your YNAB account.
+Setup prints the exact paths it used. Token files created by setup are readable and writable only by your user on systems with Unix file permissions. Keep your token private; it grants access to your YNAB account.
 
 You can later adjust budgeting preferences in `config.toml`. For example, choosing a budget and Codex during setup produces settings like:
 
@@ -83,7 +85,7 @@ spending_target_mode = "refill"
 
 Without `default_budget`, select a budget at the prompt or supply `--budget`. The [full example configuration](config.example.toml) shows optional priorities, protected balances, income schedules, and merchant rules. All monetary settings use **milliunits: 1000 = 1 currency unit**.
 
-Existing source checkouts continue using their repository's `config.toml` and `.env`. To reuse those settings with an installed command, pass `--config /path/to/your/config.toml`, or set `YNAB_TOOLKIT_CONFIG` to that path in your shell. The `.env` beside that file supplies its credentials; the toolkit does not combine credentials from different settings folders. Process environment variables take precedence over `.env`, then TOML. An explicitly selected missing settings file is an error, except that `setup` can create it.
+For custom settings locations and environment variables, see the [configuration reference](docs/REFERENCE.md#configuration).
 
 ### 3. Choose an AI backend for categorization
 
@@ -95,7 +97,7 @@ Only `categorize` needs AI. Budget planning, rebalancing, corrections, checks, a
 | Claude Code | Follow [Anthropic's setup instructions](https://code.claude.com/docs/en/setup), then run `claude` and complete sign-in. | `backend = "claude"` |
 | Another CLI or local model | Provide a trusted command that reads a prompt from stdin and writes its answer to stdout. See [custom backends](docs/REFERENCE.md#choosing-a-model-backend). | `backend = "command"` |
 
-Choose the backend during `setup`, or change `backend` under `[defaults]` in `config.toml` later. The toolkit reuses the CLI's existing authentication; you do not paste that provider's token into the toolkit. A Codex login with access does not require a separate OpenAI API key. This adapter was verified with Codex CLI 0.153.4 and requires `exec --ignore-user-config` and `--ephemeral`.
+Choose the backend during `setup`, or change `backend` under `[defaults]` in `config.toml` later. The toolkit reuses the CLI's existing authentication; you do not paste that provider's token into the toolkit. A Codex login with access does not require a separate OpenAI API key.
 
 Try a preview:
 
@@ -117,7 +119,7 @@ On first use, this asks for your Amazon login, password, authenticator secret, A
 
 The command then installs the matching [Playwright Chromium browser](https://playwright.dev/python/docs/browsers), opens Amazon, and saves the signed-in session. Complete any interactive challenge in the window. Later, `ynab-toolkit amazon-login` reuses the installed browser. Run with `--install-browser` again if an update requires a newer browser version.
 
-The browser profile stays at `~/.config/ynab-categorizer/amazon-profile` for compatibility. Order matching is enabled only for the explicitly named budget. Amazon parsing currently assumes English order dates and dollar-formatted totals.
+Order matching is enabled only for the budget you name during setup. Amazon parsing currently assumes English order dates and dollar-formatted totals.
 
 #### Finding the authenticator setup key
 
@@ -137,7 +139,7 @@ There are three different pieces of information:
 
 If you already have an authenticator but did not retain its setup key, use its supported secret/export feature if available, or enroll another authenticator through Amazon. A displayed six-digit code cannot recover the original key. Keep the key private: it can generate future login codes.
 
-The "number on the end of the password" is Amazon's alternate sign-in method. The toolkit generates and appends that temporary code automatically, and can fill a separate code field when shown. **Do not save your password with today's code appended.** [Amazon's explanation](https://digprjsurvey.amazon.co.uk/csad/help/node/201962400).
+Some Amazon sign-in screens ask for a temporary code appended to your password. The toolkit handles this automatically and can also fill a separate code field. **Save only your normal password during setup.** [Amazon's explanation](https://digprjsurvey.amazon.co.uk/csad/help/node/201962400).
 
 ### 5. Check the connection
 
@@ -266,15 +268,17 @@ ynab-toolkit restore reports/assign-applied.json --apply
 
 Restore checks that the current values still match the run's writes; it refuses to overwrite later edits. It is not a universal undo for all subsequent YNAB activity. If a run stops partway through, inspect its journal and run `budget-check` before retrying. Operations use separate API requests, not an atomic transaction. See [journals and recovery](docs/REFERENCE.md#run-journals-and-recovery).
 
-## More detail and development
+## More detail
 
 - [Detailed behavior and configuration](docs/REFERENCE.md): target calculations, income assumptions, AI permissions, protections, verification, and recovery.
 - [Example settings](config.example.toml) and [secret variable names](.env.example).
 - [Privacy and publishing](PRIVACY.md): source exports exclude credentials, personal records, and Git history; contents still need review.
 - [Changelog](CHANGELOG.md).
 
-For development, clone the repository and use `pdm install -G test` and `pdm run test`. `pdm run ynab-toolkit ...`, `python -m ynab_toolkit ...` in the project environment, and the old `python -m ynab_categorizer ...` entry point remain supported. To install a local checkout as a command, run `uv tool install .`; use `uv tool install --editable .` if you want source edits reflected immediately. The Python integration package and existing journal/browser-profile directories retain their original names.
-
 Reports describe the transactions recorded in YNAB, not independently reconciled bank statements. CLI amounts use the budget's currency with dollar-style displays; no currency conversion is performed. Keep reports and journals private.
+
+## Contributing
+
+To change the toolkit, follow the [contributor guide](CONTRIBUTING.md): clone or fork the repository, install the development environment, edit the code, run tests, and submit a pull request. It also covers editable command installs and preparing public source exports.
 
 Licensed under [MIT](LICENSE).

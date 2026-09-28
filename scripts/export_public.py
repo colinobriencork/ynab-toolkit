@@ -8,6 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 # Explicitly reviewed file paths. New files require an intentional review here.
 FILES = (
     'README.md',
+    'CONTRIBUTING.md',
     'docs/REFERENCE.md',
     'CHANGELOG.md',
     'LICENSE',

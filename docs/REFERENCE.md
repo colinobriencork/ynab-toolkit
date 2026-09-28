@@ -4,7 +4,11 @@ Start with the [command guide, setup, and workflows](../README.md). This referen
 
 ## Configuration
 
-Set `YNAB_API_TOKEN` in `.env` or the process environment. Supported process environment values override `.env`, which overrides top-level TOML settings. Settings are selected as described in [setup](../README.md#2-connect-ynab). The matching `.env` is read beside the selected settings file. `config.toml` is optional; `--config /path/to/settings.toml` selects another file. An explicitly selected missing file is an error.
+Run `ynab-toolkit setup` to save your YNAB token and create starter settings. An installed copy uses `~/.config/ynab-toolkit/config.toml` and the `.env` beside it; `XDG_CONFIG_HOME` replaces the `~/.config` base directory when set. Development copies use settings in their source checkout, as described in [Contributing](../CONTRIBUTING.md#use-your-development-copy-as-a-command).
+
+Use `--config /path/to/settings.toml` to select a settings file, or set `YNAB_TOOLKIT_CONFIG` in your shell. The command-line option takes precedence. The matching `.env` is always read beside the selected file, so credentials from separate settings folders are not combined. An explicitly selected missing file is an error, except that `setup` can create it.
+
+For manual configuration, set `YNAB_API_TOKEN` in `.env` or the process environment. Supported process environment values override `.env`, which overrides top-level TOML settings. `config.toml` is optional when the required settings are supplied through those variables.
 
 Choose a budget with `--budget "Your Budget Name"` or its ID. Otherwise, set `default_budget` in TOML or use the interactive selector. No personal budget names, IDs, income, or merchant rules are required in source code.
 
@@ -194,20 +198,8 @@ Spending reports show category outflows, inflows, and net spending; income; and 
 
 Email uses Gmail SMTP. Set `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, and optional `SPEND_WATCH_RECIPIENTS`; email is sent only with `--send`. Reports reflect YNAB's recorded balances and categories, not independently reconciled bank statements. The CLI currently uses English labels and dollar-style displays; amounts belong to the selected budget's currency and are never converted.
 
-## Development and publishing
+## Contributing
 
-```bash
-pdm run test
-pdm run export-public /tmp/ynab-public
-pdm run prepare-release /tmp/ynab-release-0.2.0
-```
-
-Tests use fake clients, HTTP mocks, and simulated failures; no live budgets, emails, model requests, or bank payments are needed. GitHub Actions runs the test suite on Python 3.13 and 3.14.
-
-`export-public` creates a new source-only directory using an explicit file allowlist: application, tests, public examples, build files, and CI. It omits `.env`, `config.toml`, browser profiles, run journals, personal reports, local Claude settings, standalone personal analysis scripts, and `.git` history. New source files must be added to the reviewed manifest explicitly. File selection does not anonymize file contents; see [PRIVACY.md](../PRIVACY.md) before publishing. Your original local files remain intact. If your development checkout contains private financial data in its history, start a fresh Git repository in the exported directory when publishing.
-
-`prepare-release` exports source to a new directory, runs the tests there, and creates a source ZIP, SHA-256 checksum, and validation manifest. It does not exercise live YNAB writes.
-
-No GitHub repository is created or pushed by these commands. Legacy personal scripts in the development checkout are not part of the public application; use the configurable `spending-report` and `correct` commands instead.
+For development setup, testing, editable installs, and public release preparation, see [CONTRIBUTING.md](../CONTRIBUTING.md).
 
 Licensed under MIT; see [LICENSE](../LICENSE).
