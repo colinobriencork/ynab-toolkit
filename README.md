@@ -139,122 +139,91 @@ This reads your budget and reports its condition without changing it. An overspe
 
 ## A practical budgeting workflow
 
-Use the commands in this order as needed. **Every amount, merchant, and scenario below is invented.** Examples describe the results to expect, not literal terminal output. Dates are placeholders to replace with the month you are reviewing.
+Follow one small budget from January into February. **All names and amounts are invented.** Use your own dates and categories when running these commands.
 
-### When transactions arrive: categorize, then check
+### 1. Review new transactions
 
 ```bash
-ynab-toolkit categorize --report reports/categories-preview.json
-ynab-toolkit categorize --apply --report reports/categories-applied.json
+ynab-toolkit categorize
+```
+
+An unapproved $8 purchase at Fictional Stationery Store is in Groceries. The toolkit suggests Hobbies instead. Review the suggestions, then apply them:
+
+```bash
+ynab-toolkit categorize --apply
+```
+
+The transaction moves to Hobbies and is approved. Categorization also reviews YNAB's automatic choices; already-approved transactions are skipped.
+
+### 2. See what needs attention
+
+```bash
+ynab-toolkit budget-check
+ynab-toolkit spending-report --start 2030-01-01 --end 2030-01-31
+```
+
+The check flags Dining as $9 overspent. The spending report shows $29 spent there; you had assigned $20. The check also highlights any credit cards without enough money set aside for payment.
+
+### 3. Cover overspending with spare money
+
+Once the month's remaining expenses are accounted for, preview a rebalance:
+
+```bash
+ynab-toolkit rebalance
+```
+
+Hobbies has $12 spare, so the toolkit proposes moving $9 to Dining:
+
+| Category | Available before | Available after |
+| --- | ---: | ---: |
+| Hobbies | $12 | $3 |
+| Dining | −$9 | $0 |
+| Savings | $50 | $50 |
+
+Savings stays protected. The report explains each proposed move and which balances are being kept. Review it, then apply:
+
+```bash
+ynab-toolkit rebalance --apply --report reports/rebalance.json
+```
+
+This saves a record of what changed. Rebalancing works on the current month; [protection settings](docs/REFERENCE.md#rebalance-unused-month-end-funding) let you reserve other balances too.
+
+### 4. Preview next month's budget
+
+```bash
+ynab-toolkit phantom-assign --month 2030-02
+```
+
+Transport has a monthly spending target of $80 and $25 left to carry forward. The plan calls for **$55 more**, bringing it to $80. It uses existing balances and expected income to work out the month's assignments.
+
+Check that essential categories are funded and paychecks arrive before bills are due. This command previews by default; applying a forecast can make Ready to Assign negative until the income arrives. See [how targets and income are calculated](docs/REFERENCE.md#budget-assignment-and-verification).
+
+### 5. Assign money after payday
+
+When a $100 paycheck arrives in Ready to Assign:
+
+```bash
+ynab-toolkit assign
+```
+
+The toolkit proposes assignments using the money now available, your targets, and your priorities. Review them, then apply and check the result:
+
+```bash
+ynab-toolkit assign --apply
 ynab-toolkit budget-check
 ```
 
-Review the preview before applying. Categorization checks **unapproved on-budget transactions**, including ones YNAB already categorized. Applying a confirmed choice also approves it. Already-approved transactions are left alone. Transfers, tracking-account entries, splits, and unresolved cases are left for manual review.
+### Other useful commands
 
-For example, an unapproved 8-unit purchase at Fictional Stationery Store may have been guessed as Groceries. A configured merchant rule or the AI can propose Hobbies instead. Applying changes its category and approves it; a later categorization run skips it.
+`spend-watch` is read-only. `correct` and `restore` preview changes; add `--apply` after reviewing.
 
-If a merchant always belongs in one category, add a rule under its budget in `config.toml`:
+| When | Command | Example |
+| --- | --- | --- |
+| Check spending pace | `ynab-toolkit spend-watch` | With configured monthly income of $100 and spending of $45, shows 45% spent. |
+| Fix an older, approved expense | `ynab-toolkit correct --transaction TRANSACTION_ID --category "Needs: Clothing"` | Moves a $6 expense from Hobbies to Clothing, along with its funding. |
+| Undo a saved run | `ynab-toolkit restore reports/rebalance.json` | Reverses the recorded rebalance, provided later edits do not conflict. |
 
-```toml
-[budgets."Your Budget Name"]
-merchant_rules = { "Fictional Stationery Store" = "Wants: Hobbies" }
-```
-
-### When a card shortfall looks surprising: investigate before funding it
-
-```bash
-ynab-toolkit budget-check --report reports/health.json
-ynab-toolkit spending-report --start 2030-01-01 --end 2030-01-31 --report reports/spending.json
-```
-
-`budget-check` shows how much is owed on each card and how much is available in its payment category. `spending-report` shows category outflows, inflows, net spending, and review flags. The JSON also identifies merchants appearing in multiple categories and transaction IDs for flagged items. Use those clues to inspect the relevant transactions in YNAB; this command is not a complete transaction-ledger export or automatic explanation of every card gap.
-
-For example, a work expense of 80 followed by a reimbursement of 20 leaves 60 uncovered. An unrelated reimbursement received and passed on to somebody else is not additional money for that expense. The report shows recorded category inflows; it does not guess which future claims will be paid. Check the underlying transactions before treating a shortfall as reimbursable.
-
-A current-month credit purchase shortfall is generally covered in its spending category, allowing YNAB to move funding to the card. Older debt carried into a later month needs card-payment funding. The planners distinguish these so the same gap is not funded twice.
-
-### After payday: assign money that has arrived
-
-```bash
-ynab-toolkit assign --report reports/assign-preview.json
-ynab-toolkit assign --apply --report reports/assign-applied.json
-ynab-toolkit budget-check
-```
-
-`assign` uses positive Ready to Assign, funds carried-over card debt and overspending, then follows your category priorities and targets. It does not forecast a paycheck to make today's allocation fit.
-
-For example, with 90 available and a 20 card gap, funding that gap leaves up to 70 for the remaining priorities. If money runs out, the remaining needs stay visible. The default priority groups are Bills, Needs, Savings, and Wants; customize them to match your own budget.
-
-### Near month-end: rebalance unused money
-
-First make sure recent transactions have imported and consider expenses still due. Then:
-
-```bash
-ynab-toolkit rebalance --report reports/rebalance-preview.json
-ynab-toolkit rebalance --apply --report reports/rebalance-applied.json
-ynab-toolkit budget-check
-```
-
-For example, Hobbies has 12 available and Dining is 9 overspent. If Hobbies is an eligible donor, rebalancing moves 9 to Dining and leaves 3 in Hobbies. The report lists **what moved from where to where**, the balances kept and why, any remaining shortfalls, and how reduced carryover changes next month's target funding.
-
-Savings, accumulating reserves, longer-term targets, card-payment money, and categories with outstanding scheduled expenses are protected. You can add protections or minimum balances:
-
-```toml
-[budgets."Your Budget Name"]
-rebalance_protected_categories = ["Bills: Upcoming service"]
-rebalance_keep = { "Needs: Transport" = 5000 }
-rebalance_last_categories = ["Needs: Reimbursements"]
-```
-
-Here, Transport keeps at least 5 units. A reimbursement category is considered last within its cash/credit priority tier. These settings must name real categories in your budget; they do not create categories.
-
-Rebalancing covers cash overspending first, then credit overspending. It preserves Ready to Assign and only moves what is needed. It operates on the **current month only** and refuses negative Ready to Assign. It also records a local hold so `assign` does not immediately refill the categories you just released. Next month has no such hold. See [the rebalance rules](docs/REFERENCE.md#rebalance-unused-month-end-funding) for exceptions and recovery.
-
-### Before next month: preview a plan using expected income
-
-```bash
-ynab-toolkit phantom-assign --month 2030-02 --report reports/next-month-preview.json
-```
-
-This combines Ready to Assign with expected income for the selected month. It covers card debt, overspending, and committed targets, then distributes the remainder within your discretionary group. Without an explicit income schedule, it looks for recent biweekly payroll; configure dated income if your pay is irregular or follows another cadence.
-
-Existing funding counts toward ordinary monthly and weekly spending targets. For example, an 80-unit target with 25 carried forward needs **55 newly assigned**. Money already spent against that month's allowance still counts, preventing repeated refills. Savings contributions and accumulating reserves can intentionally need another contribution. These are toolkit calculations; YNAB's target definitions are not edited.
-
-For a toy forecast with 120 total resources, 60 of committed needs and 20 of card debt leave 40 for discretionary allocations. That arithmetic can be correct while the plan is incomplete: a necessary category without a target or outside the priority groups may still need an allowance.
-
-**The current discretionary planner uses positive targets where present, otherwise recent spending averages, and proportionally fits those amounts into the remaining money.** It can partially fund targets. The resulting remainder is not proof that every essential expense has been covered. Review missing targets, subscription changes, reimbursements, and bill timing before treating it as freely spendable.
-
-Keep this as a preview while reviewing. Adding `--apply` writes the forecast's assignments now and can make Ready to Assign negative until the expected income arrives. Monthly totals do not prove that a paycheck arrives before an early-month bill. Use `assign` after income arrives if you want to allocate only existing money.
-
-### Periodically: review spending against income
-
-```bash
-ynab-toolkit spend-watch
-```
-
-Configure `monthly_income`, `warn_ratio`, and `near_limit_ratio` for each budget first. For example, 45 spent against a configured income of 100 is 45%. This is a quick pacing check; use `spending-report` for category detail.
-
-Optional email requires `GMAIL_ADDRESS`, `GMAIL_APP_PASSWORD`, and optionally `SPEND_WATCH_RECIPIENTS` in your private `.env`. Only `ynab-toolkit spend-watch --send` sends it. See [reporting and email](docs/REFERENCE.md#spending-reports-and-email).
-
-### When you find an older mistake: correct or restore
-
-To fix one unsplit expense, use its transaction ID and an unambiguous category name:
-
-```bash
-ynab-toolkit correct --transaction TRANSACTION_ID --category "Needs: Clothing"
-ynab-toolkit correct --transaction TRANSACTION_ID --category "Needs: Clothing" --apply
-```
-
-For example, correcting a 6-unit expense from Hobbies to Clothing also moves its matching assignment in the transaction's month, subject to balance checks. Approval status is preserved. This is useful for an already-approved expense that `categorize` intentionally skips. Refunds, splits, and transfers require manual handling.
-
-Applied budget changes save a private journal automatically. To reverse supported completed changes from a particular run:
-
-```bash
-ynab-toolkit restore reports/assign-applied.json
-ynab-toolkit restore reports/assign-applied.json --apply
-```
-
-Restore checks that the current values still match the run's writes; it refuses to overwrite later edits. It is not a universal undo for all subsequent YNAB activity. If a run stops partway through, inspect its journal and run `budget-check` before retrying. Operations use separate API requests, not an atomic transaction. See [journals and recovery](docs/REFERENCE.md#run-journals-and-recovery).
+See the reference for [spending checks](docs/REFERENCE.md#spending-reports-and-email), [corrections](docs/REFERENCE.md#correct-historical-categorization), and [restoring changes](docs/REFERENCE.md#run-journals-and-recovery).
 
 ## More detail
 

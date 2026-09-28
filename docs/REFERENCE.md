@@ -140,6 +140,8 @@ All planners and checks share one target policy. With the default `spending_targ
 
 Discretionary categories with positive targets use the same remaining-target calculation; categories without a positive target use recent average spending. Explicit `wants_overrides` take precedence. For the average/override fallback, `wants_mode = "refill"` counts carryover funding; `"accumulate"` adds this month's allowance independently of carryover. Ordinary targets skip hidden categories, while negative hidden spending balances are included in overspending coverage and checks. Proportional allocations respect the budget's currency decimal precision (optional `currency_decimal_digits` override, 0–3).
 
+Review essential categories without targets or outside the configured priority groups: they may still need an allowance. A discretionary remainder alone does not establish that every necessary expense is covered.
+
 Both commands share an application workflow:
 
 1. Fetch a budget snapshot and calculate additions.
@@ -199,6 +201,8 @@ ynab-toolkit spend-watch --send
 ```
 
 Spending reports show category outflows, inflows, and net spending; income; and configured saving/repayment roles. Uncategorised account transfers are excluded, while categorized transfers to tracking accounts follow their category role. Split transactions are counted by their parts. Reports include hidden historical categories and flag unapproved/unknown categories and merchants using multiple categories. Flags are prompts to review, not proof of an error. Refunds and reimbursements are shown together as category inflows rather than guessed from payee names.
+
+The report is a category summary with review flags, not a complete transaction ledger or an automatic explanation of every card shortfall. Inspect the underlying transactions in YNAB to trace a gap, and count reimbursements only when received.
 
 `spend-watch` compares spending with each configured budget's `monthly_income` and thresholds. Optional `savings_pairs` maps comparison labels to category-name keywords. No savings comparisons run unless you configure this table; an empty table also disables them. Existing `MONTHLY_INCOME_<FIRST_WORD>` environment values remain supported in currency units; explicit per-budget `monthly_income` avoids first-word collisions and uses milliunits.
 
